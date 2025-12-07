@@ -1,4 +1,8 @@
-export const generateComponentColor = (component: string) => {
+export const generateComponentColor = (
+  component: string,
+  saturation: number = 65,
+  lightness: number = 55
+) => {
   // Simple but stable hash → integer
   let hash = 0;
   for (let i = 0; i < component.length; i++) {
@@ -8,10 +12,6 @@ export const generateComponentColor = (component: string) => {
   // Golden angle (~137.5°) ensures evenly spaced hues
   const goldenAngle = 137.508;
   const hue = (Math.abs(hash) * goldenAngle) % 360;
-
-  // Fix S and L to keep contrast high
-  const saturation = 65;
-  const lightness = 55;
 
   return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
 };

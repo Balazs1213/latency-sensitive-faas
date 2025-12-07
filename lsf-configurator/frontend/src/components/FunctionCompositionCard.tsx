@@ -112,20 +112,28 @@ const FunctionCompositionCard: React.FC<Props> = ({
                 Components:
               </Typography>
               <Stack direction="row" spacing={1} flexWrap="wrap">
-                {composition.components.map((component) => (
-                  <Box
-                    key={component}
-                    sx={{
-                      backgroundColor: generateComponentColor(component),
-                      borderRadius: 2,
-                      padding: 1,
-                      textAlign: "center",
-                      border: "1px solid #e0e0e0",
-                    }}
-                  >
-                    <Typography variant="body2">{component}</Typography>
-                  </Box>
-                ))}
+                {composition.components.map((component) => {
+                  return (
+                    <Box
+                      key={component}
+                      sx={{
+                        backgroundColor: generateComponentColor(
+                          component,
+                          65,
+                          90
+                        ),
+                        border: `2px solid ${generateComponentColor(
+                          component
+                        )}`,
+                        borderRadius: 2,
+                        padding: 1,
+                        textAlign: "center",
+                      }}
+                    >
+                      <Typography variant="body2">{component}</Typography>
+                    </Box>
+                  );
+                })}
               </Stack>
             </Box>
           )}

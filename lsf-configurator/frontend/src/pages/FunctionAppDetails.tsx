@@ -255,7 +255,12 @@ const FunctionAppDetails: React.FC = () => {
               <Paper
                 elevation={3}
                 sx={{
-                  backgroundColor: generateComponentColor(component.name),
+                  backgroundColor: generateComponentColor(
+                    component.name,
+                    65,
+                    90
+                  ),
+                  border: `2px solid ${generateComponentColor(component.name)}`,
                   borderRadius: 2,
                   padding: 2,
                   textAlign: "center",
