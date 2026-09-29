@@ -1,0 +1,9 @@
+parliament-functions==0.1.0
+requests
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation
+opentelemetry-exporter-otlp
+redis
+aio_pika
+cloudevents<2
