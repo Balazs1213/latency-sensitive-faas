@@ -5,8 +5,8 @@ os.environ["REDIS_HOST"] = "localhost"
 os.environ["REDIS_PORT"] = "6379"
 
 from event import Event
-from position_service import position_service_2d_handler
-from ru_fusion import ru_fusion_handler
+from position_service_2d import handler as position_service_2d_handler
+from ru_fusion_service import handler as ru_fusion_handler
 
 # This simulates the "local" routing chain that Egon's func.py would perform:
 # position-service-2d -> ru-fusion-service, within a single composed function

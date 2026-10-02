@@ -1,5 +1,6 @@
-from position_service import position_service_2d_handler, position_service_3d_handler
-from ru_fusion import ru_fusion_handler
+from position_service_2d import handler as position_service_2d
+from position_service_3d import handler as position_service_3d
+from ru_fusion_service import handler as ru_fusion_service
 from redis import Redis
 import os
 import json
@@ -13,9 +14,9 @@ FUNCTION_NAME = os.environ["FUNCTION_NAME"]
 redis_client = Redis(host=REDIS_URL, port=6379)
 
 HANDLERS: Dict[str, Callable[[Context], Any]] = {
-    "ru-fusion-service": ru_fusion_handler,
-    "position-service-2d": position_service_2d_handler,
-    "position-service-3d": position_service_3d_handler,
+    "ru-fusion-service": ru_fusion_service,
+    "position-service-2d": position_service_2d,
+    "position-service-3d": position_service_3d,
     # REGISTER COMPONENT HANDLERS HERE
 }
 

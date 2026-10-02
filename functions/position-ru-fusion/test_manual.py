@@ -5,7 +5,7 @@ os.environ["REDIS_HOST"] = "localhost"
 os.environ["REDIS_PORT"] = "6379"
 
 from event import Event
-from ru_fusion import ru_fusion_handler
+from ru_fusion_service import handler as ru_fusion_handler
 
 # Sample input, matching the real structure that position-service
 # sends to ru-fusion-service (taken from an earlier live pipeline run)
