@@ -66,3 +66,21 @@ The files in `functions/<name>/` are a copy of this template plus component modu
 
 ### `functions/position-ru-fusion`
 Handlers `position-service-2d`, `position-service-3d` → `ru-fusion-service`, converted from RabbitMQ consumers by stripping the queue wrapping and keeping the pure calculation + Redis state logic. They use their own Redis client (`REDIS_HOST`/`REDIS_PORT`, separate from the routing-table Redis via `NODE_IP`) and optionally import a `monitoring.tsdb_client` module that isn't in this repo (they degrade gracefully when it's missing). `ru_fusion_handler` only runs fusion for RSU-sourced observations (vehicle id containing `rsu`).
+
+## Conventions
+
+- Write all code comments in English, even when the conversation is in Hungarian.
+
+## How a function pod reaches the routing-table Redis
+- `NODE_IP` is not set by the template or by `getDeployEnvs`. Egon's fork of the Knative `func` library (`github.com/szaboegon/knative-func`, used via the `replace` in `lsf-configurator/go.mod` and shipped as the `lsfunc` CLI in `tools/lsfunc.zip`) injects it through the downward API: `NODE_IP` ← `fieldRef: status.hostIP`. This needs `kubernetes.podspec-fieldref: enabled` in `kubernetes/knative/serving.yaml`.
+- `redis-master` is a headless Service (`clusterIP: None`) and has no NodePort, but the `redis-replica` DaemonSet (`kubernetes/redis/redis-master-replica.yaml`) runs on every node with `hostPort: 6379`. A function pod therefore reads its routing table from the **node-local read-only replica** at `NODE_IP:6379`.
+- Writes go to the master through cluster DNS. The configurator sets routing tables via `REDIS_URL=redis-master.redis.svc.cluster.local:6379`, and functions write results via `RESULT_STORE_ADDRESS=redis-master.redis.svc.cluster.local`.
+- On the current minikube cluster (nodes `knative`, `knative-m02`, `knative-m03`), the `func-1`..`func-5` services in `application` were deployed with stock `func`. `NODE_IP` was then added with a `kubectl patch` (revision `-00002`, 2026-09-28). Any function deployed outside the configurator/`lsfunc` path needs the same env var added by hand.
+
+## Project status and decisions (as of 2026-10-02)
+
+- The Python logic of `position-service` and `ru-fusion-service` has been ported into `functions/position-ru-fusion/` (`position_service.py`, `ru_fusion.py`). `position-service` has two handlers, `position-service-2d` and `position-service-3d`, because the original service consumed two RabbitMQ queues (`detection-tracking-results` and `3d-tracking-results`) with different payload shapes.
+- **Supervisor decision:** `ru-fusion-service` and `position-service` stay in **separate function compositions** for now and are not deployed fused. Egon's platform is meant to decide at runtime when to merge them, by changing the routing table. The work so far ported and validated the logic at the handler level (`test_manual*.py`). Nothing has been deployed to Knative yet.
+- **Open:** the Redis routing tables for the position-ru-fusion compositions have not been set up yet. See "How a function pod reaches the routing-table Redis" above for the mechanism.
+- The RabbitMQ-based components (`rtp-proxy`, `2d-detect-and-track`, `what-time-is-it`) stay unchanged in the separate `edge-adas` repo and are not to be moved here.
+- **Tech debt:** the ported position/fusion code in this repo intentionally duplicates the original code in `edge-adas` (done for quick validation). The two copies can drift apart.
