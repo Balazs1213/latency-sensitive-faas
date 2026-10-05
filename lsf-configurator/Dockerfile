@@ -1,5 +1,5 @@
 # Build stage: use Debian-based Go image for full CGO support
-FROM golang:1.24.0-bullseye AS build
+FROM golang:1.24.0-bookworm AS build
 
 RUN apt-get update && apt-get install -y build-essential git && rm -rf /var/lib/apt/lists/*
 WORKDIR /app

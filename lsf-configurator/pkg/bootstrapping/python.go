@@ -3,6 +3,7 @@ package bootstrapping
 import (
 	"bufio"
 	"fmt"
+	"lsf-configurator/pkg/core"
 	"lsf-configurator/pkg/filesystem"
 	"os"
 	"path"
@@ -27,12 +28,16 @@ func (b *PythonBootstrapper) Setup() error {
 
 	for _, comp := range b.fc.Components {
 		componentNames = append(componentNames, string(comp))
-		filesToCopy = append(filesToCopy, string(comp)+Extension)
+		filesToCopy = append(filesToCopy, core.ComponentModuleName(string(comp))+Extension)
 	}
 
 	componentFiles, err := filesystem.CopyFilesByNames(b.sourcePath, b.buildDir, filesToCopy, false)
 	if err != nil {
 		return err
+	}
+
+	if len(componentFiles) != len(filesToCopy) {
+		return fmt.Errorf("missing component files: expected %v, found %v", filesToCopy, componentFiles)
 	}
 
 	for _, file := range componentFiles {
@@ -147,7 +152,8 @@ func modifyConfig(buildDir string, componentNames []string) error {
 		if importSection && !strings.HasPrefix(line, "from") && !strings.HasPrefix(line, "import") && line != "" {
 			importSection = false
 			for _, component := range componentNames {
-				importStatement := fmt.Sprintf("from %s import %s as %s", component, ComponentHandlerFunc, component)
+				moduleName := core.ComponentModuleName(component)
+				importStatement := fmt.Sprintf("from %s import %s as %s", moduleName, ComponentHandlerFunc, moduleName)
 				if !strings.Contains(strings.Join(modifiedContent, "\n"), importStatement) {
 					modifiedContent = append(modifiedContent, importStatement)
 				}
@@ -158,7 +164,7 @@ func modifyConfig(buildDir string, componentNames []string) error {
 			handlersSection = true
 			modifiedContent = append(modifiedContent, line)
 			for _, component := range componentNames {
-				modifiedContent = append(modifiedContent, fmt.Sprintf("        \"%s\" : %s,", component, component))
+				modifiedContent = append(modifiedContent, fmt.Sprintf("        \"%s\" : %s,", component, core.ComponentModuleName(component)))
 			}
 			modifiedContent = append(modifiedContent, "    }")
 			continue
