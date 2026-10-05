@@ -1,8 +1,8 @@
 import os
 
 # Point both modules' Redis clients at the port-forwarded ADAS Redis.
-os.environ["REDIS_HOST"] = "localhost"
-os.environ["REDIS_PORT"] = "6379"
+os.environ.setdefault("REDIS_HOST", "localhost")
+os.environ.setdefault("REDIS_PORT", "6379")
 
 from event import Event
 from position_service_2d import handler as position_service_2d_handler
