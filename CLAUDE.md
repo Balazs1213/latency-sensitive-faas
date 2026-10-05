@@ -71,6 +71,7 @@ Handlers `position-service-2d`, `position-service-3d` → `ru-fusion-service`, c
 ## Conventions
 
 - Write all code comments in English, even when the conversation is in Hungarian.
+- No AI attribution in git history: commit messages must not contain a `Co-Authored-By` trailer or any Claude/Anthropic attribution, and PR descriptions must not contain a "Generated with Claude Code" line or similar.
 
 ## How a function pod reaches the routing-table Redis
 - `NODE_IP` is not set by the template or by `getDeployEnvs`. Egon's fork of the Knative `func` library (`github.com/szaboegon/knative-func`, used via the `replace` in `lsf-configurator/go.mod` and shipped as the `lsfunc` CLI in `tools/lsfunc.zip`) injects it through the downward API: `NODE_IP` ← `fieldRef: status.hostIP`. This needs `kubernetes.podspec-fieldref: enabled` in `kubernetes/knative/serving.yaml`.
