@@ -95,12 +95,9 @@ func (c *Composer) CreateFunctionApp(creationData FunctionAppCreationData) (*Fun
 
 	for _, fileHeader := range creationData.Files {
 		fileName := fileHeader.Filename
-		if isComponent(fileName, fcApp.Runtime) {
-			componentName := strings.TrimSuffix(fileName, filepath.Ext(fileName))
-			if !containsComponent(creationData.Components, componentName) {
-				return nil, fmt.Errorf("component file %s does not match any declared component", fileName)
-			}
-		} else {
+		// Source files that don't belong to a declared component (e.g. shared
+		// modules imported by several components) are kept as regular files.
+		if !isComponent(fileName, fcApp.Runtime, creationData.Components) {
 			fcApp.Files = append(fcApp.Files, fileName)
 		}
 		err := filesystem.SaveMultiPartFile(fileHeader, appDir)
@@ -513,18 +510,25 @@ func createBuildTimestamp() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-func containsComponent(components []Component, name string) bool {
+// ComponentModuleName returns the file/module name of a component. Component
+// names may contain hyphens, which are not valid in Python module names.
+func ComponentModuleName(componentName string) string {
+	return strings.ReplaceAll(componentName, "-", "_")
+}
+
+func isComponent(fileName string, runtime string, components []Component) bool {
+	extension := filepath.Ext(fileName)
+	if runtimeExtensions[runtime] != extension {
+		return false
+	}
+
+	moduleName := strings.TrimSuffix(fileName, extension)
 	for _, c := range components {
-		if c.Name == name {
+		if ComponentModuleName(c.Name) == moduleName {
 			return true
 		}
 	}
 	return false
-}
-
-func isComponent(fileName string, runtime string) bool {
-	extension := filepath.Ext(fileName)
-	return runtimeExtensions[runtime] == extension
 }
 
 const (
