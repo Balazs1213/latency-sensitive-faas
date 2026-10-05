@@ -37,8 +37,8 @@ except Exception as e:
 
 # Configuration
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:30793/")
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 32444))
+REDIS_HOST = os.getenv("REDIS_HOST", "redis.default.svc.cluster.local")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 POSITION_QUEUE = "position-results"
 FUSION_QUEUE = "fusion-results-stream"
 
