@@ -5,11 +5,11 @@ os.environ.setdefault("REDIS_HOST", "localhost")
 os.environ.setdefault("REDIS_PORT", "6379")
 
 from event import Event
-from position_service_2d import handler as position_service_2d_handler
+from position_service import handler as position_service_handler
 from ru_fusion_service import handler as ru_fusion_handler
 
 # This simulates the "local" routing chain that Egon's func.py would perform:
-# position-service-2d -> ru-fusion-service, within a single composed function
+# position-service -> ru-fusion-service, within a single composed function
 # invocation, passing the output of the first handler as the input to the
 # second one.
 
@@ -37,10 +37,10 @@ sample_2d_input = {
 }
 
 print("=" * 70)
-print("STAGE 1: position-service-2d (raw detection -> GPS position)")
+print("STAGE 1: position-service (raw detection -> GPS position)")
 print("=" * 70)
 event_in = Event(json=sample_2d_input, data=None)
-position_result = position_service_2d_handler(event_in)
+position_result = position_service_handler(event_in)
 print(position_result)
 
 print()
@@ -53,5 +53,5 @@ print(fusion_result)
 
 print()
 print("=" * 70)
-print("CHAIN COMPLETE: position-service-2d -> ru-fusion-service")
+print("CHAIN COMPLETE: position-service -> ru-fusion-service")
 print("=" * 70)

@@ -5,19 +5,12 @@
     "latency_limit": 1000,
     "platform_managed": false,
     "components": [
-      { "name": "position-service-2d", "memory": 128, "runtime": 20, "files": ["position_core.py"] },
-      { "name": "position-service-3d", "memory": 128, "runtime": 20, "files": ["position_core.py"] },
+      { "name": "position-service", "memory": 128, "runtime": 20, "files": ["position_core.py"] },
       { "name": "ru-fusion-service", "memory": 128, "runtime": 20, "files": ["ru_fusion.py"] }
     ],
     "links": [
       {
-        "from": "position-service-2d",
-        "to": "ru-fusion-service",
-        "invocation_rate": { "min": 1.0, "max": 4.0 },
-        "data_delay": 10
-      },
-      {
-        "from": "position-service-3d",
+        "from": "position-service",
         "to": "ru-fusion-service",
         "invocation_rate": { "min": 1.0, "max": 4.0 },
         "data_delay": 10
@@ -25,7 +18,7 @@
     ]
   },
   "function_compositions": [
-    { "id": "composition-position", "components": ["position-service-2d", "position-service-3d"] },
+    { "id": "composition-position", "components": ["position-service"] },
     { "id": "composition-fusion", "components": ["ru-fusion-service"] }
   ],
   "deployments": [
@@ -35,8 +28,7 @@
       "node": "knative-m02",
       "namespace": "application",
       "routing_table": {
-        "position-service-2d": [{ "to": "ru-fusion-service", "function": "deployment-fusion" }],
-        "position-service-3d": [{ "to": "ru-fusion-service", "function": "deployment-fusion" }]
+        "position-service": [{ "to": "ru-fusion-service", "function": "deployment-fusion" }]
       }
     },
     {

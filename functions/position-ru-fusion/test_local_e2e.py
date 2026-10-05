@@ -2,9 +2,10 @@
 Local end-to-end run of the position-ru-fusion composition through the real
 func.py orchestrator (parliament server), not by chaining handlers by hand.
 
-Chain under test (both edges are "local" routes in one composition):
-    position-service-2d -> ru-fusion-service
-    position-service-3d -> ru-fusion-service
+Chain under test ("local" route in one composition):
+    position-service -> ru-fusion-service
+position-service picks its 2D or 3D branch from the payload shape; both
+branches are exercised.
 
 What it does:
   1. Writes the routing table below into the routing-table Redis under
@@ -78,8 +79,7 @@ PERF_KEY = f"perf:{APP_NAME}"
 FUSED_OBJ_PREFIX = "fused:obj:"  # see ru_fusion.FUSED_OBJ_PREFIX
 
 ROUTING_TABLE = {
-    "position-service-2d": [{"component": "ru-fusion-service", "url": "local"}],
-    "position-service-3d": [{"component": "ru-fusion-service", "url": "local"}],
+    "position-service": [{"component": "ru-fusion-service", "url": "local"}],
     "ru-fusion-service": [],
 }
 
@@ -132,10 +132,11 @@ def sample_3d(timestamp: str) -> Dict[str, Any]:
     }
 
 
-def run_branch(component: str, payload: Dict[str, Any]) -> List[str]:
+def run_branch(component: str, branch: str, payload: Dict[str, Any]) -> List[str]:
     """POSTs one sample through func.py and returns the list of failed checks."""
     failures: List[str] = []
-    correlation_id = f"local-e2e-{component}-{uuid.uuid4().hex[:8]}"
+    label = f"{component} [{branch}]"
+    correlation_id = f"local-e2e-{component}-{branch}-{uuid.uuid4().hex[:8]}"
     last_before = routing_redis.lindex(RESULT_KEY, -1)
 
     resp = requests.post(
@@ -152,25 +153,25 @@ def run_branch(component: str, payload: Dict[str, Any]) -> List[str]:
         fid: adas_redis.exists(f"{FUSED_OBJ_PREFIX}{fid}") == 1 for fid in fused_ids
     }
 
-    print(f"--- {component} (correlation id {correlation_id})")
+    print(f"--- {label} (correlation id {correlation_id})")
     print(f"HTTP {resp.status_code}: {resp.text.strip()}")
     print(f"fused objects in ADAS Redis: {fused_present}")
 
     if resp.status_code != 200:
-        failures.append(f"{component}: HTTP {resp.status_code}")
+        failures.append(f"{label}: HTTP {resp.status_code}")
     # result:<app> is trimmed to 10 entries, so check for a new tail entry
     # with our timestamp instead of comparing lengths.
     if last_after is None or last_after == last_before:
-        failures.append(f"{component}: no new entry in {RESULT_KEY}")
+        failures.append(f"{label}: no new entry in {RESULT_KEY}")
     elif result.get("timestamp") != payload["timestamp"]:
-        failures.append(f"{component}: last {RESULT_KEY} entry is not from this request")
+        failures.append(f"{label}: last {RESULT_KEY} entry is not from this request")
     if not fused_ids:
-        failures.append(f"{component}: result has no fused objects")
+        failures.append(f"{label}: result has no fused objects")
     elif not all(fused_present.values()):
-        failures.append(f"{component}: fused object expired immediately: {fused_present}")
+        failures.append(f"{label}: fused object expired immediately: {fused_present}")
     perf_entries = [json.loads(e) for e in routing_redis.lrange(PERF_KEY, -10, -1)]
     if correlation_id not in [e.get("correlation_id") for e in perf_entries]:
-        failures.append(f"{component}: correlation id missing from {PERF_KEY}")
+        failures.append(f"{label}: correlation id missing from {PERF_KEY}")
     return failures
 
 
@@ -179,12 +180,9 @@ def main() -> int:
     print(f"Routing table set under '{ROUTING_KEY}': {routing_redis.get(ROUTING_KEY).decode()}")
 
     failures: List[str] = []
-    for component, make_sample in (
-        ("position-service-2d", sample_2d),
-        ("position-service-3d", sample_3d),
-    ):
+    for branch, make_sample in (("2d", sample_2d), ("3d", sample_3d)):
         timestamp = datetime.now(timezone.utc).isoformat()
-        failures += run_branch(component, make_sample(timestamp))
+        failures += run_branch("position-service", branch, make_sample(timestamp))
 
     print()
     if failures:
