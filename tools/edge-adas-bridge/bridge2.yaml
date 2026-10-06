@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bridge2
+  labels:
+    app: bridge2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bridge2
+  template:
+    metadata:
+      labels:
+        app: bridge2
+    spec:
+      containers:
+        - name: bridge2
+          image: python:3.11-slim
+          command:
+            [
+              "sh",
+              "-c",
+              "pip install --quiet pika redis && python /app/bridge2.py",
+            ]
+          env:
+            - name: AMQP_URL
+              value: "amqp://guest:guest@lavinmq:5672/%2F"
+            - name: REDIS_HOST
+              value: "redis-master.redis.svc.cluster.local"
+            - name: RESULT_KEY
+              value: "result:9f4mt31got8dwfyzn4dppe9i8"
+          volumeMounts:
+            - name: code
+              mountPath: /app
+      volumes:
+        - name: code
+          configMap:
+            name: bridge2-code
