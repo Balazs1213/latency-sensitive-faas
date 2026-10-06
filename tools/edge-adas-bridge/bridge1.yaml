@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bridge1
+  labels:
+    app: bridge1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bridge1
+  template:
+    metadata:
+      labels:
+        app: bridge1
+    spec:
+      containers:
+        - name: bridge1
+          image: python:3.11-slim
+          command:
+            [
+              "sh",
+              "-c",
+              "pip install --quiet pika requests && python /app/bridge1.py",
+            ]
+          env:
+            - name: AMQP_URL
+              value: "amqp://guest:guest@lavinmq:5672/%2F"
+            - name: POSITION_URL
+              value: "http://d-claenypek3sebe7gevliafmvu.application.svc.cluster.local"
+          volumeMounts:
+            - name: code
+              mountPath: /app
+      volumes:
+        - name: code
+          configMap:
+            name: bridge1-code
