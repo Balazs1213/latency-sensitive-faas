@@ -63,6 +63,8 @@ def save_state(vehicle_id, tracker, next_id, history):
 
 
 def handler(event):
+    # The framework passes an Event (with .json); local tests pass a plain dict
+    event = event.json if hasattr(event, "json") else event
     vehicle_id = event["vehicle_id"]
     meta = event["metadata"]
     calib = meta["camera_calibration"]

@@ -10,6 +10,8 @@ aio_pika
 cloudevents<2
 torch==2.3.1+cpu
 torchvision==0.18.1+cpu
-ultralytics==8.3.174
+ultralytics-opencv-headless==8.3.242
+opencv-python-headless==4.10.0.84
 numpy<2
 pillow
+lap>=0.5.12
