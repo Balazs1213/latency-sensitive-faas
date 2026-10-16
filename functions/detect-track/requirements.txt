@@ -1,0 +1,15 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+parliament-functions==0.1.0
+requests
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation
+opentelemetry-exporter-otlp
+redis
+aio_pika
+cloudevents<2
+torch==2.3.1+cpu
+torchvision==0.18.1+cpu
+ultralytics==8.3.174
+numpy<2
+pillow

@@ -1,6 +1,7 @@
 import base64
 import io
 import os
+os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp")
 import pickle
 from datetime import datetime
 
@@ -20,7 +21,7 @@ OBJ_HEIGHT_MM = {"person": 1800, "car": 1500, "truck": 2500, "bus": 2500,
                  "motorcycle": 1500, "bicycle": 1700}
 
 _redis = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
-_model = YOLO(os.getenv("YOLO_MODEL", "yolov8n.pt"))
+_model = YOLO(os.getenv("YOLO_MODEL", os.path.join(os.path.dirname(__file__), "yolov8n.pt")))
 
 # Warm-up: creates the predictor and a tracker, then keep a clean copy of the tracker
 _model.track(np.zeros((640, 640, 3), dtype=np.uint8), persist=True, verbose=False, tracker=TRACKER)

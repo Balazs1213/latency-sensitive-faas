@@ -1,0 +1,44 @@
+{
+  "function_app": {
+    "name": "adas-detect-position-fusion",
+    "runtime": "python",
+    "latency_limit": 1000,
+    "platform_managed": true,
+    "components": [
+      {
+        "name": "detect-track-service",
+        "memory": 512,
+        "runtime": 110,
+        "files": ["yolov8n.pt"]
+      },
+      {
+        "name": "position-service",
+        "memory": 128,
+        "runtime": 5,
+        "files": ["position_core.py"]
+      },
+      {
+        "name": "ru-fusion-service",
+        "memory": 128,
+        "runtime": 10,
+        "files": ["ru_fusion.py"]
+      }
+    ],
+    "links": [
+      {
+        "from": "detect-track-service",
+        "to": "position-service",
+        "invocation_rate": { "min": 1.0, "max": 4.0 },
+        "data_delay": 10
+      },
+      {
+        "from": "position-service",
+        "to": "ru-fusion-service",
+        "invocation_rate": { "min": 1.0, "max": 4.0 },
+        "data_delay": 10
+      }
+    ]
+  },
+  "function_compositions": [],
+  "deployments": []
+}
