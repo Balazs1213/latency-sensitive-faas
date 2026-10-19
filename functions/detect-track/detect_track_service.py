@@ -3,6 +3,7 @@ import io
 import os
 os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp")
 import pickle
+import threading
 from datetime import datetime
 
 import numpy as np
@@ -16,6 +17,7 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 TRACKER = os.getenv("TRACKER", "botsort.yaml")
 STATE_TTL_S = int(os.getenv("TRACKER_STATE_TTL_S", "300"))
 HISTORY_LEN = 30
+LOCK_TIMEOUT_S = float(os.getenv("TRACKER_LOCK_TIMEOUT_S", "10"))
 
 OBJ_HEIGHT_MM = {"person": 1800, "car": 1500, "truck": 2500, "bus": 2500,
                  "motorcycle": 1500, "bicycle": 1700}
@@ -27,6 +29,8 @@ _model = YOLO(os.getenv("YOLO_MODEL", os.path.join(os.path.dirname(__file__), "y
 _model.track(np.zeros((640, 640, 3), dtype=np.uint8), persist=True, verbose=False, tracker=TRACKER)
 _model.predictor.trackers[0].reset()
 _FRESH_TRACKER = pickle.dumps(_model.predictor.trackers[0])
+# The model, its tracker slot and BaseTrack._count are shared by all threads of the process
+_model_lock = threading.Lock()
 
 
 def object_properties(x1, y1, x2, y2, confidence, class_name, image_w, image_h, calib, heading):
@@ -71,36 +75,39 @@ def handler(event):
     image = Image.open(io.BytesIO(base64.b64decode(event["data"]["image1"])))
     image_w, image_h = image.size
 
-    # Restore this camera's tracker before running the model
-    tracker, next_id, history = load_state(vehicle_id)
-    _model.predictor.trackers = [tracker]
-    BaseTrack._count = next_id
+    # Redis lock: one frame per camera at a time, across replicas.
+    # Process lock: only one request may use the shared model and track counter.
+    with _redis.lock(f"tracker-lock:{vehicle_id}", timeout=LOCK_TIMEOUT_S, blocking_timeout=LOCK_TIMEOUT_S):
+        with _model_lock:
+            tracker, next_id, history = load_state(vehicle_id)
+            _model.predictor.trackers = [tracker]
+            BaseTrack._count = next_id
 
-    result = _model.track(image, persist=True, verbose=False, tracker=TRACKER)[0]
+            result = _model.track(image, persist=True, verbose=False, tracker=TRACKER)[0]
 
-    detections, tracks = [], []
-    if result.boxes is not None:
-        for box in result.boxes:
-            class_name = result.names[int(box.cls[0])]
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
-            det = object_properties(x1, y1, x2, y2, float(box.conf[0]), class_name,
-                                    image_w, image_h, calib, meta["heading"])
-            detections.append(det)
-            if box.is_track:
-                track_id = box.id.int().cpu().item()
-                det["track_id"] = track_id
-                x, y, w, h = box.xywh[0].tolist()
-                track = history.setdefault(track_id, [])
-                track.append((float(x), float(y), float(w), float(h)))
-                del track[:-HISTORY_LEN]
-                tracks.append({
-                    "track_id": track_id,
-                    "current_position": {"x": float(x), "y": float(y), "width": float(w), "height": float(h)},
-                    "track_history": track,
-                    "track_length": len(track),
-                })
+            detections, tracks = [], []
+            if result.boxes is not None:
+                for box in result.boxes:
+                    class_name = result.names[int(box.cls[0])]
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    det = object_properties(x1, y1, x2, y2, float(box.conf[0]), class_name,
+                                            image_w, image_h, calib, meta["heading"])
+                    detections.append(det)
+                    if box.is_track:
+                        track_id = box.id.int().cpu().item()
+                        det["track_id"] = track_id
+                        x, y, w, h = box.xywh[0].tolist()
+                        track = history.setdefault(track_id, [])
+                        track.append((float(x), float(y), float(w), float(h)))
+                        del track[:-HISTORY_LEN]
+                        tracks.append({
+                            "track_id": track_id,
+                            "current_position": {"x": float(x), "y": float(y), "width": float(w), "height": float(h)},
+                            "track_history": track,
+                            "track_length": len(track),
+                        })
 
-    save_state(vehicle_id, _model.predictor.trackers[0], BaseTrack._count, history)
+            save_state(vehicle_id, _model.predictor.trackers[0], BaseTrack._count, history)
 
     output = {
         "vehicle_id": vehicle_id,
