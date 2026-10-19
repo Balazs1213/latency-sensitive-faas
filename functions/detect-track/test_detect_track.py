@@ -47,3 +47,12 @@ print(f"handler time avg: {sum(times_ms) / len(times_ms):.1f} ms")
 for i, (a, b) in enumerate(zip(handler_ids, ref_ids)):
     if a != b:
         print(f"diff at frame {i}: handler {a}, original {b}")
+
+
+import json
+import ultralytics
+
+out_path = f"ids_{ultralytics.__version__}.json"
+with open(out_path, "w") as f:
+    json.dump({"handler": handler_ids, "original": ref_ids}, f)
+print(f"ultralytics {ultralytics.__version__}, saved {out_path}")
