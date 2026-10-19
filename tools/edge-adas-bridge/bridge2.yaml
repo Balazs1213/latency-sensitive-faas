@@ -29,7 +29,7 @@ spec:
             - name: REDIS_HOST
               value: "redis-master.redis.svc.cluster.local"
             - name: RESULT_KEY
-              value: "result:9f4mt31got8dwfyzn4dppe9i8"
+              value: "result:baxtms5xdcqf8s2xxrlxg96il"
           volumeMounts:
             - name: code
               mountPath: /app
