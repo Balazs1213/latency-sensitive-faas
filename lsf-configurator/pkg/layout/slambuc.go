@@ -204,7 +204,13 @@ func (c *slambucCalculator) estimateReplicasPerGroup(layout map[string][]core.Co
 			totalRuntime += comp.Runtime
 			totalMemory += comp.Memory
 		}
-		arrivalRate := calculateTotalArrivalRate(group, scenario.Links)
+				// The entry component (first profile) receives the external input rate (first link's rate)
+		entryName, entryRate := "", 0.0
+		if len(scenario.Profiles) > 0 && len(scenario.Links) > 0 {
+			entryName = scenario.Profiles[0].Name
+			entryRate = scenario.Links[0].InvocationRate
+		}
+		arrivalRate := calculateTotalArrivalRate(group, scenario.Links, entryName, entryRate)
 		replicas := calculateRequiredReplicas(totalRuntime, scenario.TargetConcurrency, arrivalRate, scenario.TargetUtilization)
 
 		// assign updated replicas to each component in this composition

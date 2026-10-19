@@ -6,13 +6,18 @@ import (
 )
 
 // arrival rate is sum of incoming rates
-// computes total arrival rate for a group of components
-func calculateTotalArrivalRate(comps []core.ComponentProfile, links []core.ScenarioLink) float64 {
+// computes total arrival rate for a group of components;
+// the group containing the entry component also receives the external input rate (entryRate),
+// which is not part of links (same convention as the root edge in runSLAMBUC)
+func calculateTotalArrivalRate(comps []core.ComponentProfile, links []core.ScenarioLink, entryName string, entryRate float64) float64 {
 	groupNames := make(map[string]bool)
 	for _, c := range comps {
 		groupNames[c.Name] = true
 	}
 	totalRate := 0.0
+	if entryName != "" && groupNames[entryName] {
+		totalRate += entryRate
+	}
 	for _, l := range links {
 		if groupNames[l.To] && !groupNames[l.From] {
 			totalRate += l.InvocationRate
