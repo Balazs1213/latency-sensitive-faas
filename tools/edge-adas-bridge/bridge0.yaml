@@ -27,7 +27,9 @@ spec:
             - name: AMQP_URL
               value: "amqp://guest:guest@lavinmq:5672/%2F"
             - name: TARGET_URL
-              value: "http://d-d00fy08zr2ykwjs8zrdnoi6hx.application.svc.cluster.local"
+              value: "http://istio-ingressgateway.istio-system.svc.cluster.local"
+            - name: HOST_HEADER
+              value: "app-baxtms5xdcqf8s2xxrlxg96il.application.127.0.0.1.sslip.io"
           volumeMounts:
             - name: code
               mountPath: /app

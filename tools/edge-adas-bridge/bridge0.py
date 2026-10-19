@@ -9,6 +9,7 @@ INPUT_QUEUE = os.getenv("INPUT_QUEUE", "camera-stream")
 STREAM_FILTER = os.getenv("STREAM_FILTER", "camera-2d")
 TARGET_URL = os.environ["TARGET_URL"]
 FORWARD_TO = os.getenv("FORWARD_TO", "detect-track-service")
+HOST_HEADER = os.getenv("HOST_HEADER", "")  # app's stable host name when TARGET_URL is the ingress gateway
 
 
 def on_message(ch, method, properties, body):
@@ -18,6 +19,8 @@ def on_message(ch, method, properties, body):
         "X-Forward-To": FORWARD_TO,
         "X-Correlation-ID": f"bridge0-{uuid.uuid4().hex[:12]}",
     }
+    if HOST_HEADER:
+        headers["Host"] = HOST_HEADER
     try:
         r = requests.post(TARGET_URL, data=body, headers=headers, timeout=30)
         print(f"forwarded {len(body)} bytes -> HTTP {r.status_code}", flush=True)
