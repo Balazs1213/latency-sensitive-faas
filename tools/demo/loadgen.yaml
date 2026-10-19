@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  labels:
+    app: loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loadgen
+  template:
+    metadata:
+      labels:
+        app: loadgen
+    spec:
+      containers:
+        - name: loadgen
+          image: curlimages/curl:8.10.1
+          env:
+            - name: APP_HOST
+              value: "app-5mv85bcecc2k6ulowrb8lei2k.application.127.0.0.1.sslip.io"
+            - name: INTERVAL_S
+              value: "0.5"
+          command:
+            - sh
+            - -c
+            - |
+              # Sends one 2D detection request to the app's stable address, then waits
+              while true; do
+                TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+                curl -s -o /dev/null -w "$TS %{http_code} %{time_total}s\n" -X POST \
+                  http://istio-ingressgateway.istio-system.svc.cluster.local \
+                  -H "Host: $APP_HOST" -H "Content-Type: application/json" -H "X-Forward-To: position-service" \
+                  --data "{\"vehicle_id\":\"RSU-DEMO-01\",\"timestamp\":\"$TS\",\"detections\":[{\"class\":\"person\",\"confidence\":0.85,\"bbox_2d\":[420,370,450,460],\"relative_position\":{\"distance_m\":5.0,\"direction_angle_rad\":0.5,\"direction_angle_deg\":28.6}}],\"metadata\":{\"position\":{\"lat\":47.4720386,\"lon\":19.059602,\"alt\":149.7},\"heading\":68.4}}"
+                sleep "$INTERVAL_S"
+              done
