@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {handler}-func
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {handler}-func
+  template:
+    metadata:
+      labels:
+        app: {handler}-func
+    spec:
+      containers:
+        - name: {handler}-func
+          image: adas-benchmark/{handler}:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2048Mi"
+            limits:
+              cpu: "500m"
+              memory: "2048Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {handler}-func
+spec:
+  selector:
+    app: {handler}-func
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: NodePort

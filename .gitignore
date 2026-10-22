@@ -215,3 +215,6 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 functions/*/venv/
+
+# Ignore the locally downloaded YOLOv8 model weights; this large binary is not source code.
+tools/benchmarker-adas/deps/yolov8n.pt
