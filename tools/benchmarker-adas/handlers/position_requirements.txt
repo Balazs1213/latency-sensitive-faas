@@ -2,3 +2,5 @@ flask
 requests
 redis
 aio_pika
+parliament-functions==0.1.0
+cloudevents<2

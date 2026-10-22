@@ -12,18 +12,25 @@ spec:
       labels:
         app: {handler}-func
     spec:
+      enableServiceLinks: false
       containers:
         - name: {handler}-func
           image: adas-benchmark/{handler}:latest
           imagePullPolicy: Never
           ports:
             - containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 2
+            failureThreshold: 60  
           resources:
             requests:
-              cpu: "500m"
+              cpu: "2500m"
               memory: "2048Mi"
             limits:
-              cpu: "500m"
+              cpu: "2500m"
               memory: "2048Mi"
 ---
 apiVersion: v1
