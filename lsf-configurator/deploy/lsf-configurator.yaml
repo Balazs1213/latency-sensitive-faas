@@ -160,9 +160,9 @@ spec:
             - name: RESULT_STORE_ADDRESS
               value: "redis-master.redis.svc.cluster.local"
             - name: TARGET_CONCURRENCY
-              value: "5"
+              value: "1"
             - name: COMPONENT_MCPU_ALLOCATION
-              value: "500"
+              value: "2500"
             - name: OVERHEAD_MCPU_ALLOCATION
               value: "0"
             - name: COMPONENT_SHARED_MEMORY_RATIO
