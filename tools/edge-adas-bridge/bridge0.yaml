@@ -29,7 +29,7 @@ spec:
             - name: TARGET_URL
               value: "http://istio-ingressgateway.istio-system.svc.cluster.local"
             - name: HOST_HEADER
-              value: "app-baxtms5xdcqf8s2xxrlxg96il.application.127.0.0.1.sslip.io"
+              value: "app-4dr6u38ufksqzmew9f3twvriw.application.127.0.0.1.sslip.io"
           volumeMounts:
             - name: code
               mountPath: /app
