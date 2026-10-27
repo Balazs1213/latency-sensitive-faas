@@ -33,12 +33,23 @@ def read_traces(path):
     return start, end, lat, deps
 
 
-def rolling_p95(end, lat):
-    """P95 of traces that ended in the last WINDOW_S seconds, evaluated every second."""
-    grid = np.arange(end.min() + WINDOW_S, end.max() + 1, 1.0)
-    values = np.array([np.percentile(lat[(end > g - WINDOW_S) & (end <= g)], 95)
-                       if np.any((end > g - WINDOW_S) & (end <= g)) else np.nan for g in grid])
+def rolling_p95(times, lat):
+    """P95 of traces whose time (end or start) fell in the last WINDOW_S seconds, evaluated every second."""
+    grid = np.arange(times.min() + WINDOW_S, times.max() + 1, 1.0)
+    values = np.array([np.percentile(lat[(times > g - WINDOW_S) & (times <= g)], 95)
+                       if np.any((times > g - WINDOW_S) & (times <= g)) else np.nan for g in grid])
     return grid, values
+
+
+def last_violation(grid, p95, prev, t_dec, limit):
+    """Start of the last above-limit period before the decision."""
+    above = (grid > prev) & (grid <= t_dec) & (p95 > limit)
+    below = (grid > prev) & (grid <= t_dec) & (p95 <= limit)
+    if not above.any():
+        return None
+    last_ok = grid[below].max() if below.any() else prev
+    later = above & (grid > last_ok)
+    return grid[later].min() if later.any() else None
 
 
 def first(events, phase, after, before=float("inf")):
@@ -56,6 +67,7 @@ def main():
     events = read_phases(os.path.join(args.run, "controller.log"))
     start, end, lat, deps = read_traces(os.path.join(args.run, "traces.csv"))
     grid, p95 = rolling_p95(end, lat)
+    grid_s, p95_s = rolling_p95(start, lat)  # by request start: when the problem really began
     t0 = start.min()
     decisions = [e for e in events if e["phase"] == "decision"]
     results = []
@@ -67,12 +79,9 @@ def main():
         r = {"layout": d["layout"], "decision": t_dec}
 
         if d["layout"] == "max_rate":  # upgrade: there was a violation before the decision
-            above = (grid > prev) & (grid <= t_dec) & (p95 > args.limit)
-            below = (grid > prev) & (grid <= t_dec) & (p95 <= args.limit)
-            if above.any():
-                last_ok = grid[below].max() if below.any() else prev
-                r["viol"] = grid[above & (grid > last_ok)].min()
-            r["seen"] = first(events, "violation_seen", r.get("viol", prev), t_dec)
+            r["viol"] = last_violation(grid, p95, prev, t_dec, args.limit)
+            r["viol_start"] = last_violation(grid_s, p95_s, prev, t_dec, args.limit)
+            r["seen"] = first(events, "violation_seen", r["viol"] or prev, t_dec)
 
         ready = [e["t"] for e in events if e["phase"] in ("deployment_ready", "deployment_reused")
                  and t_dec <= e["t"] < nxt]
@@ -100,7 +109,9 @@ def main():
                 ("  rerouting (ready -> dns)", "ready", "dns"),
                 ("  propagation (dns -> served)", "dns", "served"),
                 ("recovery (served -> P95 < limit)", "served", "recover"),
-                ("above limit total (viol -> recover)", "viol", "recover")]
+                ("above limit total (viol -> recover)", "viol", "recover"),
+                ("detection by request start", "viol_start", "decision"),
+                ("above limit by request start", "viol_start", "recover")]
         for name, a, b in rows:
             print(f"  {name:38s} {span(r, a, b)}")
 
