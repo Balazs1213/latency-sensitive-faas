@@ -54,6 +54,8 @@ type Configuration struct {
 	LatencyDowngradeFactor float64 `env:"LATENCY_DOWNGRADE_FACTOR" default:"0.5"`
 	// Warm standby for the inactive layouts: "off" (deploy on switch), "one" (one warm pod), "full" (all required replicas warm)
 	PrewarmMode string `env:"PREWARM_MODE" default:"off"`
+	// Adaptive prewarm: boost the standby layout when the arrival rate exceeds this share of the active layout's capacity
+	BoostRateFactor float64 `env:"BOOST_RATE_FACTOR" default:"0.75"`
 }
 
 func Init() Configuration {

@@ -30,6 +30,7 @@ type Composer struct {
 	routingClient      RoutingClient
 	builder            Builder
 	dnsClient          DNSClient
+	scaleClient        ScaleClient
 	functionAppRepo    FunctionAppRepository
 	fcRepo             FunctionCompositionRepository
 	deploymentRepo     DeploymentRepository
@@ -47,6 +48,7 @@ func NewComposer(
 	builder Builder,
 	metricsReader MetricsReader,
 	dnsClient DNSClient,
+	scaleClient ScaleClient,
 ) *Composer {
 	scheduler := NewScheduler(WorkerPoolSize, QueueSize)
 	return &Composer{
@@ -55,6 +57,7 @@ func NewComposer(
 		routingClient:   routingClient,
 		builder:         builder,
 		dnsClient:       dnsClient,
+		scaleClient:     scaleClient,
 		functionAppRepo: functionAppRepo,
 		fcRepo:          fcRepo,
 		deploymentRepo:  deploymentRepo,
@@ -193,6 +196,15 @@ func (c *Composer) RollbackBulk(
 			log.Errorf("Failed to rollback function app %s: %v", app.Id, err)
 		}
 	}
+}
+
+// SetDeploymentMinScale changes how many warm replicas a deployment keeps
+func (c *Composer) SetDeploymentMinScale(dep *Deployment, minScale int) error {
+	if err := c.scaleClient.SetMinScale(context.TODO(), dep.Namespace, dep.Id, minScale); err != nil {
+		return err
+	}
+	dep.Scale.MinReplicas = minScale
+	return nil
 }
 
 func (c *Composer) UpdateDNSRecord(appId, namespace, targetDeploymentId string) error {

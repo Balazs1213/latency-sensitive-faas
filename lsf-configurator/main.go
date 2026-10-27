@@ -75,7 +75,7 @@ func main() {
 	}
 
 	composer = core.NewComposer(functionAppRepo, fcRepo, deploymentRepo, routingClient,
-		knClient, tektonBuilder, metricsReader, dnsClient)
+		knClient, tektonBuilder, metricsReader, dnsClient, dnsClient)
 
 	err = filesystem.CreateDir(conf.UploadDir)
 	if err != nil {
@@ -90,7 +90,7 @@ func main() {
 	controller = core.NewController(composer, metricsReader, scenarioManager,
 		time.Duration(conf.ControllerTickDelaySeconds)*time.Second, conf.DeployNamespace,
 		conf.AvailableNodeMemoryGb, core.MetricType(conf.ControllerMetricType),
-		conf.ControllerMetricQueryTimeRange, conf.LatencyDowngradeFactor, conf.PrewarmMode)
+		conf.ControllerMetricQueryTimeRange, conf.LatencyDowngradeFactor, conf.PrewarmMode, conf.TargetUtilization, conf.BoostRateFactor)
 
 	if !conf.LocalMode {
 		go func() {

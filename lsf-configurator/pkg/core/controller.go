@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ const (
 	logInterval             = 1 * time.Minute
 	minConsecutiveDowngrade = 300
 	reuseDeployments        = true
+	unboostQuietPeriod      = 60 * time.Second // adaptive prewarm: scale the standby back after this long below the threshold
 )
 
 type MetricType string
@@ -53,17 +55,29 @@ type latencyController struct {
 	reconfigStartTimes           map[string]time.Time
 	lastLogTime                  time.Time
 	consecutiveDowngradeEligible map[string]int // appId -> count of consecutive eligible downgrade intervals
-	prewarmMode                  string         // "off", "one" or "full": warm standby level of the inactive layouts
+	prewarmMode                  string               // "off", "one", "full" or "adaptive": warm standby level of the inactive layouts
+	targetUtilization            float64              // utilization target of the layout model, used for the layout capacity
+	boostRateFactor              float64              // adaptive prewarm: boost threshold as a share of the active layout's capacity
+	metricWindow                 time.Duration        // length of the metric query window (arrival rate = trace count / window)
+	boostedSince                 map[string]time.Time // adaptive prewarm: appId -> when the standby layout was boosted
+	lastAboveBoost               map[string]time.Time // adaptive prewarm: appId -> last tick with the rate above the threshold
 }
 
 func NewController(composer *Composer, metrics MetricsReader, scenarioManager ScenarioManager,
 	delay time.Duration, deployNamespace string, availableNodeMemoryGb int, aggMetricType MetricType,
-	metricQueryTimeRange string, latencyDowngradeFactor float64, prewarmMode string) Controller {
+	metricQueryTimeRange string, latencyDowngradeFactor float64, prewarmMode string, targetUtilization float64, boostRateFactor float64) Controller {
 
-	if prewarmMode != "one" && prewarmMode != "full" {
+	if prewarmMode != "one" && prewarmMode != "full" && prewarmMode != "adaptive" {
 		prewarmMode = "off"
 	}
-	log.Printf("Layout prewarm mode: %s", prewarmMode)
+	log.Printf("Layout prewarm mode: %s (boost at %.2f of the layout capacity, utilization %.2f)", prewarmMode, boostRateFactor, targetUtilization)
+
+	// Length of the metric window, e.g. "now-15s" -> 15s; the arrival rate is the trace count divided by it
+	metricWindow, err := time.ParseDuration(strings.TrimPrefix(metricQueryTimeRange, "now-"))
+	if err != nil || metricWindow <= 0 {
+		log.Printf("Warning: cannot parse the metric window from '%s', assuming 15s", metricQueryTimeRange)
+		metricWindow = 15 * time.Second
+	}
 		
 	if aggMetricType != MetricTypeP95 && aggMetricType != MetricTypeAverage {
 		log.Printf("Warning: Invalid metric type '%s' provided. Defaulting to P95.", aggMetricType)
@@ -96,6 +110,11 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 		lastLogTime:                  time.Now(),
 		consecutiveDowngradeEligible: make(map[string]int),
 		prewarmMode:                  prewarmMode,
+		targetUtilization:            targetUtilization,
+		boostRateFactor:              boostRateFactor,
+		metricWindow:                 metricWindow,
+		boostedSince:                 make(map[string]time.Time),
+		lastAboveBoost:               make(map[string]time.Time),
 	}
 }
 
@@ -162,6 +181,11 @@ func (c *latencyController) Start(ctx context.Context) error {
 				// Phase marker: the controller sees the latency above the limit (logged on every such tick)
 				if runtime > float64(app.LatencyLimit) {
 					logPhase(app.Id, "violation_seen", app.ActiveLayoutKey, "", runtime)
+				}
+
+				// Adaptive prewarm: scale up the next layout's standby before the latency limit is reached
+				if c.prewarmMode == "adaptive" {
+					c.adaptStandby(app, traceCounts[appId])
 				}
 
 				c.lastReconfigsMu.Lock()
@@ -236,6 +260,10 @@ func (c *latencyController) Start(ctx context.Context) error {
 				}
 				if app.LatencyLimit <= 0 {
 					continue
+				}
+				// Adaptive prewarm: without traffic the rate is low, so a boosted standby is scaled back after the quiet period
+				if c.prewarmMode == "adaptive" {
+					c.adaptStandby(app, traceCounts[app.Id])
 				}
 				if app.ActiveLayoutKey == LayoutKeyMin {
 					continue
@@ -394,6 +422,17 @@ func (c *latencyController) handleLayoutChange(app *FunctionApp, path map[string
 	c.lastReconfigsMu.Unlock()
 	logPhase(app.Id, "decision", nextLayoutKey, "", 0)
 
+	// Prewarm: an upgrade consumes the boost; after a downgrade the layout just left still runs all
+	// required replicas, so it goes back to the standby level (adaptive: after the quiet period)
+	switch {
+	case c.prewarmMode == "adaptive" && isUpgrade:
+		delete(c.boostedSince, app.Id)
+	case c.prewarmMode == "adaptive":
+		c.boostedSince[app.Id] = time.Now()
+	case c.prewarmMode == "one" && !isUpgrade:
+		go c.setLayoutMinScale(app, layoutUpgradePath[nextLayoutKey], false)
+	}
+
 	go func() {
 		if err := c.deployLayout(app.Id, nextLayout, isUpgrade, reuseDeployments, false); err != nil {
 			log.Printf("Failed to deploy new layout for app %s: %v", app.Id, err)
@@ -473,6 +512,16 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 					// if a deployment already exists for this fc+node, reuse it
 					log.Printf("Reusing existing deployment %s for node %s", dep.Id, node)
 					logPhase(appId, "deployment_reused", "", dep.Id, 0)
+					// A reused deployment keeps its old min-scale: raise it on upgrades and set standby deployments to the standby level
+					if isUpgrade || standby {
+						minScale := compositionInfo.RequiredReplicas
+						if standby && c.prewarmMode != "full" {
+							minScale = 1
+						}
+						if err := c.composer.SetDeploymentMinScale(dep, minScale); err != nil {
+							log.Printf("Failed to set min-scale of reused deployment %s: %v", dep.Id, err)
+						}
+					}
 					resultChan <- depResult{depKey, dep, nil}
 					return
 				}
@@ -736,5 +785,110 @@ func (c *latencyController) ensureStandbyLayouts(app *FunctionApp) {
 		if err := c.deployLayout(app.Id, layout, false, true, true); err != nil {
 			log.Printf("Failed to deploy standby layout %s for app %s: %v", key, app.Id, err)
 		}
+	}
+}
+
+
+// layoutCapacity is the arrival rate (req/s) a layout is sized for at the model's target utilization:
+// the minimum over its compositions of replicas * concurrency * utilization * 1000 / runtime of the composition
+func (c *latencyController) layoutCapacity(layout Layout) float64 {
+	capacity := math.Inf(1)
+	for _, ci := range layout {
+		runtime := 0
+		for _, cp := range ci.ComponentProfiles {
+			runtime += cp.Runtime
+		}
+		if runtime <= 0 {
+			continue
+		}
+		concurrency := ci.TargetConcurrency
+		if concurrency < 1 {
+			concurrency = 1
+		}
+		compCapacity := float64(ci.RequiredReplicas*concurrency) * c.targetUtilization * 1000 / float64(runtime)
+		if compCapacity < capacity {
+			capacity = compCapacity
+		}
+	}
+	return capacity
+}
+
+// setLayoutMinScale sets the min-scale of every deployment of a layout candidate:
+// all required replicas when boosted, one warm pod otherwise
+func (c *latencyController) setLayoutMinScale(app *FunctionApp, layoutKey string, boost bool) {
+	// Reload the app: compositions and their deployments are only loaded by GetFunctionApp
+	fresh, err := c.composer.GetFunctionApp(app.Id)
+	if err != nil || fresh == nil {
+		log.Printf("Failed to load app %s for min-scale change: %v", app.Id, err)
+		return
+	}
+	app = fresh
+	layout, ok := app.LayoutCandidates[layoutKey]
+	if !ok {
+		return
+	}
+	fcByKey := make(map[string]*FunctionComposition)
+	for _, fc := range app.Compositions {
+		fcByKey[componentsKey(fc.Components)] = fc
+	}
+	for node, ci := range layout {
+		names := make([]string, len(ci.ComponentProfiles))
+		for i, cp := range ci.ComponentProfiles {
+			names[i] = cp.Name
+		}
+		fc, ok := fcByKey[componentsKey(names)]
+		if !ok {
+			continue
+		}
+		minScale := 1
+		if boost {
+			minScale = ci.RequiredReplicas
+		}
+		for _, d := range fc.Deployments {
+			if d.Node != node {
+				continue
+			}
+			if err := c.composer.SetDeploymentMinScale(d, minScale); err != nil {
+				log.Printf("Failed to set min-scale of deployment %s: %v", d.Id, err)
+				continue
+			}
+			log.Printf("Set min-scale of deployment %s (layout %s) to %d", d.Id, layoutKey, minScale)
+		}
+	}
+}
+
+// adaptStandby boosts the standby of the next larger layout when the arrival rate gets close to the
+// capacity of the active layout, and scales it back to one warm pod after a quiet period
+func (c *latencyController) adaptStandby(app *FunctionApp, traceCount int) {
+	next := layoutUpgradePath[app.ActiveLayoutKey]
+	if next == "" {
+		return
+	}
+	rate := float64(traceCount) / c.metricWindow.Seconds()
+	threshold := c.boostRateFactor * c.layoutCapacity(app.LayoutCandidates[app.ActiveLayoutKey])
+	now := time.Now()
+
+	if rate > threshold {
+		c.lastAboveBoost[app.Id] = now
+		if _, boosted := c.boostedSince[app.Id]; !boosted {
+			c.boostedSince[app.Id] = now
+			logPhase(app.Id, "standby_boost", next, "", rate)
+			go c.setLayoutMinScale(app, next, true)
+		}
+		return
+	}
+
+	since, boosted := c.boostedSince[app.Id]
+	if !boosted {
+		return
+	}
+	last := c.lastAboveBoost[app.Id]
+	if last.Before(since) {
+		last = since
+	}
+	if now.Sub(last) >= unboostQuietPeriod {
+		delete(c.boostedSince, app.Id)
+		logPhase(app.Id, "standby_unboost", next, "", rate)
+		go c.setLayoutMinScale(app, next, false)
 	}
 }

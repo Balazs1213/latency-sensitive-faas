@@ -6,12 +6,14 @@ import (
 	"path/filepath"
 
 	istioclient "istio.io/client-go/pkg/clientset/versioned"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
 type Client struct {
-	istio istioclient.Interface
+	istio   istioclient.Interface
+	dynamic dynamic.Interface // used to patch Knative services (no typed Knative client in the module)
 }
 
 func NewKubeclient() (*Client, error) {
@@ -34,5 +36,10 @@ func NewKubeclient() (*Client, error) {
 		return nil, fmt.Errorf("failed to create Istio client: %w", err)
 	}
 
-	return &Client{istio: ic}, nil
+	dc, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dynamic client: %w", err)
+	}
+
+	return &Client{istio: ic, dynamic: dc}, nil
 }

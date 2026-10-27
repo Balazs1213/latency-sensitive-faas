@@ -64,3 +64,7 @@ type DNSClient interface {
 	EnsureDNSRecord(ctx context.Context, namespace, appName, targetServiceName string) error
 	DeleteDNSRecord(ctx context.Context, namespace, appName string) error
 }
+
+type ScaleClient interface {
+	SetMinScale(ctx context.Context, namespace, serviceName string, minScale int) error
+}
