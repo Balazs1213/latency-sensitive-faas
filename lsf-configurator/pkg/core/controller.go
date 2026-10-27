@@ -142,6 +142,11 @@ func (c *latencyController) Start(ctx context.Context) error {
 					continue
 				}
 
+				// Phase marker: the controller sees the latency above the limit (logged on every such tick)
+				if runtime > float64(app.LatencyLimit) {
+					logPhase(app.Id, "violation_seen", app.ActiveLayoutKey, "", runtime)
+				}
+
 				c.lastReconfigsMu.Lock()
 				last, ok := c.lastReconfigs[app.Id]
 				if ok && time.Since(last) < c.cooldownPeriod {
@@ -183,11 +188,6 @@ func (c *latencyController) Start(ctx context.Context) error {
 					c.lastReconfigsMu.Unlock()
 					continue
 				}
-
-				// Only for testing: measure reconfiguration duration
-				c.lastReconfigsMu.Lock()
-				c.reconfigStartTimes[app.Id] = time.Now()
-				c.lastReconfigsMu.Unlock()
 
 				nextLayoutKey, err := handler(app)
 				if err != nil {
@@ -243,7 +243,6 @@ func (c *latencyController) Start(ctx context.Context) error {
 				}
 
 				c.lastReconfigsMu.Lock()
-				c.reconfigStartTimes[app.Id] = time.Now()
 				c.consecutiveDowngradeEligible[app.Id] = 0
 				c.lastReconfigsMu.Unlock()
 
@@ -368,6 +367,12 @@ func (c *latencyController) handleLayoutChange(app *FunctionApp, path map[string
 		return "", fmt.Errorf("failed to update active layout key for app %s: %w", app.Id, err)
 	}
 
+	// Phase marker: decision taken; the switch duration is measured from here
+	c.lastReconfigsMu.Lock()
+	c.reconfigStartTimes[app.Id] = time.Now()
+	c.lastReconfigsMu.Unlock()
+	logPhase(app.Id, "decision", nextLayoutKey, "", 0)
+
 	go func() {
 		if err := c.deployLayout(app.Id, nextLayout, isUpgrade, reuseDeployments); err != nil {
 			log.Printf("Failed to deploy new layout for app %s: %v", app.Id, err)
@@ -446,6 +451,7 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 				if dep, ok := activeDepsByKey[depKey]; ok {
 					// if a deployment already exists for this fc+node, reuse it
 					log.Printf("Reusing existing deployment %s for node %s", dep.Id, node)
+					logPhase(appId, "deployment_reused", "", dep.Id, 0)
 					resultChan <- depResult{depKey, dep, nil}
 					return
 				}
@@ -476,11 +482,15 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 				return
 			}
 
+			logPhase(appId, "deployment_created", "", newDep.Id, 0)
+
 			r := <-depChan
 			if r.Err != nil {
 				resultChan <- depResult{"", nil, fmt.Errorf("deployment task failed for fc %s on node %s: %w", matchedFc.Id, node, r.Err)}
 				return
 			}
+
+			logPhase(appId, "deployment_ready", "", newDep.Id, 0)
 
 			matchedFc.Deployments = append(matchedFc.Deployments, newDep) // add to fc's deployments
 			log.Printf("Created new deployment %s for fc %s on node %s", newDep.Id, matchedFc.Id, node)
@@ -574,6 +584,7 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 		return fmt.Errorf("failed to update DNS record for app %s: %w", app.Id, err)
 	}
 	log.Printf("Updated DNS record for app %s to deployment %s (first component: %s)", app.Id, firstDepID, firstComponent)
+	logPhase(appId, "dns_updated", "", firstDepID, 0)
 
 	// Measure and log reconfiguration end-to-end latency
 	c.lastReconfigsMu.Lock()
@@ -624,6 +635,7 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 					kept = append(kept, d)
 				} else {
 					log.Printf("Deleted deployment %s", d.Id)
+					logPhase(appId, "old_deleted", "", d.Id, 0)
 				}
 			}
 			fc.Deployments = kept
@@ -649,4 +661,20 @@ func componentsKey(comps []string) string {
 	cp := append([]string(nil), comps...)
 	sort.Strings(cp)
 	return strings.Join(cp, ",")
+}
+
+// logPhase writes one machine-readable line per reconfiguration phase.
+// The lines are used to split a layout switch into detection and execution time.
+func logPhase(appId, phase, layout, deploymentId string, value float64) {
+	event := map[string]interface{}{
+		"app_id":        appId,
+		"phase":         phase,
+		"t_ms":          time.Now().UnixMilli(),
+		"layout":        layout,
+		"deployment_id": deploymentId,
+		"value":         value,
+	}
+	if b, err := json.Marshal(event); err == nil {
+		log.Printf("[RECONFIG_PHASE] %s", string(b))
+	}
 }
