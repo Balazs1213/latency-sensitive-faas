@@ -31,6 +31,11 @@ rules:
       ]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # Knative PodAutoscalers (min-scale of the warm standby layouts without a new revision)
+  - apiGroups: ["autoscaling.internal.knative.dev"]
+    resources: ["podautoscalers"]
+    verbs: ["get", "patch"]
+
   # Istio VirtualService API
   - apiGroups: ["networking.istio.io"]
     resources: ["virtualservices", "envoyfilters"]
