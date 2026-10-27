@@ -53,12 +53,18 @@ type latencyController struct {
 	reconfigStartTimes           map[string]time.Time
 	lastLogTime                  time.Time
 	consecutiveDowngradeEligible map[string]int // appId -> count of consecutive eligible downgrade intervals
+	prewarmMode                  string         // "off", "one" or "full": warm standby level of the inactive layouts
 }
 
 func NewController(composer *Composer, metrics MetricsReader, scenarioManager ScenarioManager,
 	delay time.Duration, deployNamespace string, availableNodeMemoryGb int, aggMetricType MetricType,
-	metricQueryTimeRange string, latencyDowngradeFactor float64) Controller {
+	metricQueryTimeRange string, latencyDowngradeFactor float64, prewarmMode string) Controller {
 
+	if prewarmMode != "one" && prewarmMode != "full" {
+		prewarmMode = "off"
+	}
+	log.Printf("Layout prewarm mode: %s", prewarmMode)
+		
 	if aggMetricType != MetricTypeP95 && aggMetricType != MetricTypeAverage {
 		log.Printf("Warning: Invalid metric type '%s' provided. Defaulting to P95.", aggMetricType)
 		aggMetricType = MetricTypeP95
@@ -89,11 +95,22 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 		reconfigStartTimes:           make(map[string]time.Time),
 		lastLogTime:                  time.Now(),
 		consecutiveDowngradeEligible: make(map[string]int),
+		prewarmMode:                  prewarmMode,
 	}
 }
 
 func (c *latencyController) Start(ctx context.Context) error {
 	log.Println("Latency Controller started")
+	// Prewarm: bring up the inactive layouts of the already registered apps
+	if c.prewarmMode != "off" {
+		if apps, err := c.composer.functionAppRepo.GetAll(); err == nil {
+			for _, app := range apps {
+				if app.LatencyLimit > 0 && len(app.LayoutCandidates) > 1 {
+					go c.ensureStandbyLayouts(app)
+				}
+			}
+		}
+	}
 	ticker := time.NewTicker(c.delay)
 	defer ticker.Stop()
 
@@ -329,12 +346,16 @@ func (c *latencyController) RegisterFunctionApp(creationData FunctionAppCreation
 	}
 
 	go func(appId string, layout Layout) {
-		err = c.deployLayout(appId, layout, false, reuseDeployments)
+		err = c.deployLayout(appId, layout, false, reuseDeployments, false)
 		if err != nil {
 			log.Printf("Error deploying layout for app %s: %v", appId, err)
 			return
 		}
 		log.Printf("Successfully deployed function app with layout %s: %v", appId, layout)
+		// Prewarm: deploy the other layout candidates once the initial layout is up
+		if fresh, err := c.composer.GetFunctionApp(appId); err == nil && fresh != nil {
+			c.ensureStandbyLayouts(fresh)
+		}
 	}(app.Id, app.LayoutCandidates[app.ActiveLayoutKey])
 
 	return app, nil
@@ -374,7 +395,7 @@ func (c *latencyController) handleLayoutChange(app *FunctionApp, path map[string
 	logPhase(app.Id, "decision", nextLayoutKey, "", 0)
 
 	go func() {
-		if err := c.deployLayout(app.Id, nextLayout, isUpgrade, reuseDeployments); err != nil {
+		if err := c.deployLayout(app.Id, nextLayout, isUpgrade, reuseDeployments, false); err != nil {
 			log.Printf("Failed to deploy new layout for app %s: %v", app.Id, err)
 		}
 	}()
@@ -383,7 +404,7 @@ func (c *latencyController) handleLayoutChange(app *FunctionApp, path map[string
 	return nextLayoutKey, nil
 }
 
-func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade bool, reuseFunctions bool) error {
+func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade bool, reuseFunctions bool, standby bool) error {
 	log.Printf("Deploying layout for app %s: %v", appId, layout)
 
 	app, err := c.composer.GetFunctionApp(appId)
@@ -462,9 +483,8 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 
 			emptyRT := make(RoutingTable)
 			minReplicas := 1
-			// For upgrades, set minReplicas to requiredReplicas/2 to reduce cold starts
-			if isUpgrade {
-				// minReplicas = int(math.Ceil(float64(compositionInfo.RequiredReplicas) / 2))
+			// Upgrades and "full" standby layouts start with all required replicas warm
+			if isUpgrade || (standby && c.prewarmMode == "full") {
 				minReplicas = compositionInfo.RequiredReplicas
 			}
 			scale := Scale{
@@ -574,6 +594,12 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 		log.Printf("Set routing table for deployment %s: %v", dep.Id, rt)
 	}
 
+	// Standby layout: deployments and routing tables are ready, but the entry point is not switched
+	if standby {
+		logPhase(appId, "standby_ready", "", "", 0)
+		return nil
+	}
+
 	//TODO: this list is not necessarily ordered, but its fine for now
 	firstComponent := app.Components[0].Name
 	firstDepID, ok := compToDepID[firstComponent]
@@ -612,13 +638,30 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 	}
 	c.lastReconfigsMu.Unlock()
 
+	// With prewarm, keep every deployment that belongs to any layout candidate (fc@node), so the
+	// previously active layout stays warm for the next switch
+	keepKeys := make(map[string]bool)
+	if c.prewarmMode != "off" {
+		for _, candidate := range app.LayoutCandidates {
+			for node, ci := range candidate {
+				names := make([]string, len(ci.ComponentProfiles))
+				for i, cp := range ci.ComponentProfiles {
+					names[i] = cp.Name
+				}
+				if fc, ok := fcByKey[componentsKey(names)]; ok {
+					keepKeys[fc.Id+"@"+node] = true
+				}
+			}
+		}
+	}
+
 	// cleanup: remove unused deployments asynchronously
 	go func() {
 		time.Sleep(10 * time.Second)
 		for _, fc := range app.Compositions {
 			var kept []*Deployment
 			for _, d := range fc.Deployments {
-				if activeDepIDs[d.Id] || referencedDepIDs[d.Id] {
+				if activeDepIDs[d.Id] || referencedDepIDs[d.Id] || keepKeys[fc.Id+"@"+d.Node] {
 					kept = append(kept, d)
 					continue
 				}
@@ -676,5 +719,22 @@ func logPhase(appId, phase, layout, deploymentId string, value float64) {
 	}
 	if b, err := json.Marshal(event); err == nil {
 		log.Printf("[RECONFIG_PHASE] %s", string(b))
+	}
+}
+
+// ensureStandbyLayouts deploys every inactive layout candidate of the app without traffic,
+// so that a later switch only needs rerouting (no pod startup)
+func (c *latencyController) ensureStandbyLayouts(app *FunctionApp) {
+	if c.prewarmMode == "off" {
+		return
+	}
+	for key, layout := range app.LayoutCandidates {
+		if key == app.ActiveLayoutKey {
+			continue
+		}
+		logPhase(app.Id, "standby_deploy", key, "", 0)
+		if err := c.deployLayout(app.Id, layout, false, true, true); err != nil {
+			log.Printf("Failed to deploy standby layout %s for app %s: %v", key, app.Id, err)
+		}
 	}
 }

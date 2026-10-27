@@ -52,6 +52,8 @@ type Configuration struct {
 	// Target utilization ratio for replica calculations (e.g., 0.7 means keep utilization below 70% to avoid queueing delays)
 	TargetUtilization      float64 `env:"TARGET_UTILIZATION" default:"0.7"`
 	LatencyDowngradeFactor float64 `env:"LATENCY_DOWNGRADE_FACTOR" default:"0.5"`
+	// Warm standby for the inactive layouts: "off" (deploy on switch), "one" (one warm pod), "full" (all required replicas warm)
+	PrewarmMode string `env:"PREWARM_MODE" default:"off"`
 }
 
 func Init() Configuration {
