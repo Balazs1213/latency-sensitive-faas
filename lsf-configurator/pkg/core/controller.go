@@ -114,6 +114,7 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 		prewarmMode:                  prewarmMode,
 		targetUtilization:            targetUtilization,
 		boostRateFactor:              boostRateFactor,
+		switchRateFactor:             switchRateFactor,
 		metricWindow:                 metricWindow,
 		boostedSince:                 make(map[string]time.Time),
 		lastAboveBoost:               make(map[string]time.Time),
