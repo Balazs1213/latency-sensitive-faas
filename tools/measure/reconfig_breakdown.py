@@ -75,6 +75,25 @@ def first_violation_after(grid, p95, a, b, limit):
     return grid[m].min() if m.any() else None
 
 
+
+def request_stats(path, limit):
+    """Per-request statistics of the whole run, independent of the rolling window."""
+    rows = list(csv.DictReader(open(path)))
+    complete = [r for r in rows if r["has_start"] == "True" and r["has_end"] == "True"]
+    lat = np.array([float(r["e2e_ms"]) for r in complete])
+    over = lat > limit
+    return {
+        "requests": len(rows),
+        "complete": len(complete),
+        "over_limit": int(over.sum()),
+        "within_limit_pct": round(100 * (1 - over.mean()), 2),
+        "p50_ms": round(float(np.percentile(lat, 50))),
+        "p95_ms": round(float(np.percentile(lat, 95))),
+        "p99_ms": round(float(np.percentile(lat, 99))),
+        "max_ms": round(float(lat.max())),
+        "excess_s": round(float((lat[over] - limit).sum()) / 1000, 1),
+    }
+
 def first(events, phase, after, before=float("inf")):
     """Time of the first event of a phase in (after, before]."""
     times = [e["t"] for e in events if e["phase"] == phase and after <= e["t"] <= before]
@@ -144,8 +163,14 @@ def main():
         for name, a, b in rows:
             print(f"  {name:38s} {span(r, a, b)}")
 
+    # Per-request view of the whole run: independent of the rolling window
+    stats = request_stats(os.path.join(args.run, "traces.csv"), args.limit)
+    print("\n== requests (whole run)")
+    for k, v in stats.items():
+        print(f"  {k:38s} {v}")
+
     with open(os.path.join(args.run, "breakdown.json"), "w") as f:
-        json.dump(results, f, indent=1, default=float)
+        json.dump({"switches": results, "requests": stats}, f, indent=1, default=float)
 
 
 if __name__ == "__main__":
