@@ -7,8 +7,8 @@ NS=configurator
 DEPLOY=deploy/lsf-configurator-deployment
 CONTAINER=lsf-configurator
 BASELINE_IMAGE=${BASELINE_IMAGE:-lsf-configurator:baseline}
-# The dev image is tagged with the commit it was built from (run the script inside the repository)
-DEV_IMAGE=${DEV_IMAGE:-lsf-configurator:dev-$(git rev-parse --short HEAD)}
+# The dev image is tagged with the last commit that changed the framework code (run inside the repository)
+DEV_IMAGE=${DEV_IMAGE:-lsf-configurator:dev-$(git log -1 --format=%h -- lsf-configurator)}
 
 config=${1:?"usage: use_config.sh <baseline|off|one|full|adaptive> [run_dir]"}
 run_dir=${2:-}
