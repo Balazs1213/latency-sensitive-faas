@@ -518,9 +518,12 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 						if standby && c.prewarmMode != "full" {
 							minScale = 1
 						}
-						if err := c.composer.SetDeploymentMinScale(dep, minScale); err != nil {
-							log.Printf("Failed to set min-scale of reused deployment %s: %v", dep.Id, err)
-						}
+						// Run in the background: the min-scale does not affect routing, so it must not delay the switch
+						go func(d *Deployment, n int) {
+							if err := c.composer.SetDeploymentMinScale(d, n); err != nil {
+								log.Printf("Failed to set min-scale of reused deployment %s: %v", d.Id, err)
+							}
+						}(dep, minScale)
 					}
 					resultChan <- depResult{depKey, dep, nil}
 					return
