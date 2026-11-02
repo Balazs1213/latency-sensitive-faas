@@ -130,6 +130,15 @@ func (c *latencyController) Start(ctx context.Context) error {
 			}
 		}
 	}
+	// Prewarm off: remove standby deployments left over from an earlier prewarm mode,
+	// so that a switch starts from cold pods as in the original framework
+	if c.prewarmMode == "off" {
+		if apps, err := c.composer.functionAppRepo.GetAll(); err == nil {
+			for _, app := range apps {
+				go c.removeInactiveDeployments(app.Id)
+			}
+		}
+	}
 	ticker := time.NewTicker(c.delay)
 	defer ticker.Stop()
 
@@ -893,5 +902,45 @@ func (c *latencyController) adaptStandby(app *FunctionApp, traceCount int) {
 		delete(c.boostedSince, app.Id)
 		logPhase(app.Id, "standby_unboost", next, "", rate)
 		go c.setLayoutMinScale(app, next, false)
+	}
+}
+
+
+// removeInactiveDeployments deletes every deployment of the app that is not part of its active layout
+func (c *latencyController) removeInactiveDeployments(appId string) {
+	// Reload the app: compositions and their deployments are only loaded by GetFunctionApp
+	app, err := c.composer.GetFunctionApp(appId)
+	if err != nil || app == nil {
+		return
+	}
+
+	// Keys of the active layout's deployments: "components@node", the same key the reuse logic uses
+	keep := make(map[string]bool)
+	for node, ci := range app.LayoutCandidates[app.ActiveLayoutKey] {
+		names := make([]string, len(ci.ComponentProfiles))
+		for i, cp := range ci.ComponentProfiles {
+			names[i] = cp.Name
+		}
+		keep[componentsKey(names)+"@"+node] = true
+	}
+
+	for _, fc := range app.Compositions {
+		for _, d := range fc.Deployments {
+			if keep[componentsKey(fc.Components)+"@"+d.Node] {
+				continue
+			}
+			// Delete through the framework: routing table, database record and Knative service together
+			delChan, err := c.composer.DeleteFcDeployment(d.Id)
+			if err != nil {
+				log.Printf("Failed to delete inactive deployment %s: %v", d.Id, err)
+				continue
+			}
+			if r := <-delChan; r.Err != nil {
+				log.Printf("Failed to delete inactive deployment %s: %v", d.Id, r.Err)
+				continue
+			}
+			log.Printf("Deleted inactive deployment %s (prewarm off)", d.Id)
+			logPhase(app.Id, "old_deleted", "", d.Id, 0)
+		}
 	}
 }
