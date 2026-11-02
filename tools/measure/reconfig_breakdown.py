@@ -94,6 +94,37 @@ def request_stats(path, limit):
         "excess_s": round(float((lat[over] - limit).sum()) / 1000, 1),
     }
 
+
+
+SWITCH_PRE_S = 30   # switch window: requests that started this long before an upgrade decision ...
+SWITCH_POST_S = 60  # ... up to this long after it
+
+
+def latency_stats(lat, limit):
+    """Summary statistics of a set of request latencies (ms)."""
+    if lat.size == 0:
+        return {"requests": 0}
+    over = lat > limit
+    return {
+        "requests": int(lat.size),
+        "over_limit": int(over.sum()),
+        "within_limit_pct": round(100 * (1 - over.mean()), 2),
+        "p95_ms": round(float(np.percentile(lat, 95))),
+        "max_ms": round(float(lat.max())),
+        "excess_s": round(float((lat[over] - limit).sum()) / 1000, 1),
+    }
+
+
+def split_stats(path, limit, upgrades):
+    """Request statistics around the upgrade decisions vs. the rest of the run (by request start)."""
+    rows = [r for r in csv.DictReader(open(path)) if r["has_start"] == "True" and r["has_end"] == "True"]
+    start = np.array([int(r["start_us"]) / 1e6 for r in rows])
+    lat = np.array([float(r["e2e_ms"]) for r in rows])
+    near = np.zeros(len(rows), dtype=bool)
+    for t in upgrades:
+        near |= (start >= t - SWITCH_PRE_S) & (start <= t + SWITCH_POST_S)
+    return {"around_switch": latency_stats(lat[near], limit), "rest": latency_stats(lat[~near], limit)}
+
 def first(events, phase, after, before=float("inf")):
     """Time of the first event of a phase in (after, before]."""
     times = [e["t"] for e in events if e["phase"] == phase and after <= e["t"] <= before]
@@ -169,9 +200,16 @@ def main():
     for k, v in stats.items():
         print(f"  {k:38s} {v}")
 
-    with open(os.path.join(args.run, "breakdown.json"), "w") as f:
-        json.dump({"switches": results, "requests": stats}, f, indent=1, default=float)
+    # The same requests split: around the upgrade decisions vs. the rest of the run
+    upgrades = [r["decision"] for r in results if r["layout"] == "max_rate"]
+    split = split_stats(os.path.join(args.run, "traces.csv"), args.limit, upgrades)
+    for name, s in split.items():
+        print(f"\n== requests {name.replace('_', ' ')} (window: -{SWITCH_PRE_S} s .. +{SWITCH_POST_S} s around upgrades)")
+        for k, v in s.items():
+            print(f"  {k:38s} {v}")
 
+    with open(os.path.join(args.run, "breakdown.json"), "w") as f:
+        json.dump({"switches": results, "requests": stats, "split": split}, f, indent=1, default=float)
 
 if __name__ == "__main__":
     main()
