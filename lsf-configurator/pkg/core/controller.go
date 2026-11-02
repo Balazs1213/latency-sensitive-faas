@@ -58,6 +58,7 @@ type latencyController struct {
 	prewarmMode                  string               // "off", "one", "full" or "adaptive": warm standby level of the inactive layouts
 	targetUtilization            float64              // utilization target of the layout model, used for the layout capacity
 	boostRateFactor              float64              // adaptive prewarm: boost threshold as a share of the active layout's capacity
+	switchRateFactor             float64              // proactive switching: upgrade at this share of the active layout's capacity (0 = off)
 	metricWindow                 time.Duration        // length of the metric query window (arrival rate = trace count / window)
 	boostedSince                 map[string]time.Time // adaptive prewarm: appId -> when the standby layout was boosted
 	lastAboveBoost               map[string]time.Time // adaptive prewarm: appId -> last tick with the rate above the threshold
@@ -65,12 +66,13 @@ type latencyController struct {
 
 func NewController(composer *Composer, metrics MetricsReader, scenarioManager ScenarioManager,
 	delay time.Duration, deployNamespace string, availableNodeMemoryGb int, aggMetricType MetricType,
-	metricQueryTimeRange string, latencyDowngradeFactor float64, prewarmMode string, targetUtilization float64, boostRateFactor float64) Controller {
+	metricQueryTimeRange string, latencyDowngradeFactor float64, prewarmMode string, targetUtilization float64, boostRateFactor float64, switchRateFactor float64) Controller {
 
 	if prewarmMode != "one" && prewarmMode != "full" && prewarmMode != "adaptive" {
 		prewarmMode = "off"
 	}
 	log.Printf("Layout prewarm mode: %s (boost at %.2f of the layout capacity, utilization %.2f)", prewarmMode, boostRateFactor, targetUtilization)
+	log.Printf("Proactive switching: factor %.2f of the layout capacity (0 = off)", switchRateFactor)
 
 	// Length of the metric window, e.g. "now-15s" -> 15s; the arrival rate is the trace count divided by it
 	metricWindow, err := time.ParseDuration(strings.TrimPrefix(metricQueryTimeRange, "now-"))
@@ -206,9 +208,17 @@ func (c *latencyController) Start(ctx context.Context) error {
 				}
 				c.lastReconfigsMu.Unlock()
 
-				// Determine action based on runtime
+				// Determine action: proactively on the arrival rate, otherwise on the latency
 				var handler func(*FunctionApp) (string, error)
-				if runtime > float64(app.LatencyLimit) {
+				rate := float64(traceCounts[appId]) / c.metricWindow.Seconds()
+				if layoutUpgradePath[app.ActiveLayoutKey] != "" && c.rateAboveCapacity(app, app.ActiveLayoutKey, rate) {
+					// Proactive upgrade: the active layout reached the rate it was sized for
+					logPhase(app.Id, "rate_trigger", app.ActiveLayoutKey, "", rate)
+					handler = c.handleLatencyViolation
+					c.lastReconfigsMu.Lock()
+					c.consecutiveDowngradeEligible[app.Id] = 0
+					c.lastReconfigsMu.Unlock()
+				} else if runtime > float64(app.LatencyLimit) {
 					// Check trace count for upgrades to avoid reconfigurations based on insufficient data
 					count, ok := traceCounts[appId]
 					if !ok || count < minimalTraceCount {
@@ -220,7 +230,9 @@ func (c *latencyController) Start(ctx context.Context) error {
 					c.lastReconfigsMu.Lock()
 					c.consecutiveDowngradeEligible[app.Id] = 0
 					c.lastReconfigsMu.Unlock()
-				} else if runtime < float64(app.LatencyLimit)*c.latencyDowngradeFactor {
+				} else if runtime < float64(app.LatencyLimit)*c.latencyDowngradeFactor &&
+					!c.rateAboveCapacity(app, layoutDowngradePath[app.ActiveLayoutKey], rate) {
+					// With proactive switching, never downgrade to a layout that the current rate would overload
 					// Oscillation defense for downgrade: track consecutive intervals
 					c.lastReconfigsMu.Lock()
 					c.consecutiveDowngradeEligible[app.Id]++
@@ -948,4 +960,18 @@ func (c *latencyController) removeInactiveDeployments(appId string) {
 			logPhase(app.Id, "old_deleted", "", d.Id, 0)
 		}
 	}
+}
+
+
+// rateAboveCapacity reports whether proactive switching is on and the arrival rate exceeds the configured
+// share of the layout's capacity (the rate the layout was sized for at the model's target utilization)
+func (c *latencyController) rateAboveCapacity(app *FunctionApp, layoutKey string, rate float64) bool {
+	if c.switchRateFactor <= 0 {
+		return false
+	}
+	layout, ok := app.LayoutCandidates[layoutKey]
+	if !ok {
+		return false
+	}
+	return rate > c.switchRateFactor*c.layoutCapacity(layout)
 }

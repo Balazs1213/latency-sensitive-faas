@@ -56,6 +56,8 @@ type Configuration struct {
 	PrewarmMode string `env:"PREWARM_MODE" default:"off"`
 	// Adaptive prewarm: boost the standby layout when the arrival rate exceeds this share of the active layout's capacity
 	BoostRateFactor float64 `env:"BOOST_RATE_FACTOR" default:"0.75"`
+	// Proactive switching: upgrade when the arrival rate exceeds this share of the active layout's capacity (0 = off)
+	SwitchRateFactor float64 `env:"SWITCH_RATE_FACTOR" default:"0"`
 }
 
 func Init() Configuration {
