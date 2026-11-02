@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Switch the configurator to one measured configuration (image + prewarm mode) and record it.
+# Usage: tools/measure/use_config.sh <baseline|off|one|full|adaptive> [run_dir]
+set -euo pipefail
+
+NS=configurator
+DEPLOY=deploy/lsf-configurator-deployment
+CONTAINER=lsf-configurator
+BASELINE_IMAGE=${BASELINE_IMAGE:-lsf-configurator:baseline}
+# The dev image is tagged with the commit it was built from (run the script inside the repository)
+DEV_IMAGE=${DEV_IMAGE:-lsf-configurator:dev-$(git rev-parse --short HEAD)}
+
+config=${1:?"usage: use_config.sh <baseline|off|one|full|adaptive> [run_dir]"}
+run_dir=${2:-}
+
+# Set the image and the prewarm mode, then wait until the new configurator pod runs
+apply() {
+  kubectl set image -n "$NS" "$DEPLOY" "$CONTAINER=$1" >/dev/null
+  kubectl set env -n "$NS" "$DEPLOY" PREWARM_MODE="$2" >/dev/null
+  kubectl rollout status -n "$NS" "$DEPLOY" --timeout=400s
+}
+
+case "$config" in
+  baseline)
+    # The baseline image cannot remove standby deployments itself: clean up in off mode first
+    apply "$DEV_IMAGE" off
+    echo "Waiting 60 s for the off-mode cleanup..."
+    sleep 60
+    apply "$BASELINE_IMAGE" off
+    ;;
+  off|one|full|adaptive)
+    apply "$DEV_IMAGE" "$config"
+    ;;
+  *)
+    echo "unknown config: $config" >&2
+    exit 1
+    ;;
+esac
+
+echo "Waiting 60 s for the standby layouts to settle..."
+sleep 60
+
+# Record what is running now
+summary() {
+  echo "config: $config"
+  echo "time:   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "image:  $(kubectl get -n "$NS" "$DEPLOY" -o jsonpath='{.spec.template.spec.containers[0].image}')"
+  echo "digest: $(kubectl get pods -n "$NS" -l app=lsf-configurator --sort-by=.metadata.creationTimestamp \
+    -o jsonpath='{.items[-1:].status.containerStatuses[0].imageID}')"
+  echo "env:"
+  kubectl set env -n "$NS" "$DEPLOY" --list | grep -E "PREWARM|BOOST|TARGET_|MCPU|METRIC|TICK" | sed 's/^/  /'
+  echo "knative services:"
+  kubectl get ksvc -n application --no-headers | awk '{print "  " $1 "  ready=" $5}'
+  echo "pods:"
+  kubectl get pods -n application --no-headers | grep -v Terminating | awk '{print "  " $1 "  " $3}'
+}
+
+if [ -n "$run_dir" ]; then
+  mkdir -p "$run_dir"
+  summary | tee "$run_dir/config.txt"
+else
+  summary
+fi
