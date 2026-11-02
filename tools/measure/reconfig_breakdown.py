@@ -52,6 +52,29 @@ def last_violation(grid, p95, prev, t_dec, limit):
     return grid[later].min() if later.any() else None
 
 
+
+def recovery_time(grid, p95, after, limit, hold=WINDOW_S):
+    """Start of the first period after `after` in which the P95 stays at or below the limit for `hold` seconds."""
+    run_start = None
+    for g, v in zip(grid, p95):
+        if g < after:
+            continue
+        if np.isnan(v) or v <= limit:  # no traces in the window counts as below the limit
+            if run_start is None:
+                run_start = g
+            if g - run_start >= hold:
+                return run_start
+        else:
+            run_start = None
+    return None
+
+
+def first_violation_after(grid, p95, a, b, limit):
+    """First time in [a, b] when the P95 is above the limit."""
+    m = (grid >= a) & (grid <= b) & (p95 > limit)
+    return grid[m].min() if m.any() else None
+
+
 def first(events, phase, after, before=float("inf")):
     """Time of the first event of a phase in (after, before]."""
     times = [e["t"] for e in events if e["phase"] == phase and after <= e["t"] <= before]
@@ -91,8 +114,14 @@ def main():
             r["dns"] = dns[0]["t"]
             served = start[[dns[0]["deployment_id"] in x for x in deps] & (start >= t_dec)]
             r["served"] = served.min() if served.size else None
-            after = (grid > r["dns"]) & (p95 <= args.limit)
-            r["recover"] = grid[after].min() if after.any() else None
+            # Recovered when the P95 stays below the limit for a whole window (a short dip does not count)
+            r["recover"] = recovery_time(grid, p95, r["dns"], args.limit)
+        # The violation may start only after the decision (e.g. the new layout is not ready yet)
+        if d["layout"] == "max_rate" and r.get("recover"):
+            if r.get("viol") is None:
+                r["viol"] = first_violation_after(grid, p95, t_dec, r["recover"], args.limit)
+            if r.get("viol_start") is None:
+                r["viol_start"] = first_violation_after(grid_s, p95_s, t_dec, r["recover"], args.limit)
         results.append(r)
 
     def span(r, a, b):
