@@ -521,8 +521,9 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 					// if a deployment already exists for this fc+node, reuse it
 					log.Printf("Reusing existing deployment %s for node %s", dep.Id, node)
 					logPhase(appId, "deployment_reused", "", dep.Id, 0)
-					// A reused deployment keeps its old min-scale: raise it on upgrades and set standby deployments to the standby level
-					if isUpgrade || standby {
+					// A reused deployment keeps its old min-scale: set it to the required replicas when it becomes
+					// active (upgrade, or any switch with prewarm) and to the standby level for standby layouts
+					if isUpgrade || standby || c.prewarmMode != "off" {
 						minScale := compositionInfo.RequiredReplicas
 						if standby && c.prewarmMode != "full" {
 							minScale = 1
@@ -544,10 +545,12 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 
 			emptyRT := make(RoutingTable)
 			minReplicas := 1
-			// Upgrades and "full" standby layouts start with all required replicas warm
-			if isUpgrade || (standby && c.prewarmMode == "full") {
+			// All required replicas warm: on upgrades, for "full" standby layouts, and (with prewarm)
+			// for the active layout, so it runs at the capacity the model planned for
+			if isUpgrade || (standby && c.prewarmMode == "full") || (!standby && c.prewarmMode != "off") {
 				minReplicas = compositionInfo.RequiredReplicas
 			}
+
 			scale := Scale{
 				MinReplicas:       minReplicas,
 				MaxReplicas:       compositionInfo.RequiredReplicas,
@@ -789,6 +792,8 @@ func (c *latencyController) ensureStandbyLayouts(app *FunctionApp) {
 	if c.prewarmMode == "off" {
 		return
 	}
+	// The active layout runs with all required replicas (it may have been deployed with one pod)
+	c.setLayoutMinScale(app, app.ActiveLayoutKey, true)
 	for key, layout := range app.LayoutCandidates {
 		if key == app.ActiveLayoutKey {
 			continue
