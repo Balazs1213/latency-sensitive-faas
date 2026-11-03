@@ -1112,11 +1112,13 @@ func compositionKey(ci CompositionInfo) string {
 }
 
 // followRate keeps the min-scale of the followed layouts' compositions at the pods the measured rate needs
-// (the replica formula with the measured rate): raised at once, lowered only after rateScaleDownHold.
-// The active layout is always followed. In follow mode the next larger layout is followed too, so it holds
-// the pods an immediate switch at the current rate would need, and every other layout waits with one pod.
+// (the replica formula with the measured rate): raised at once, lowered only after the scale-down hold.
+// Follow mode only: the active layout and the next larger layout follow the rate, every other layout
+// waits with one pod.
 func (c *latencyController) followRate(app *FunctionApp, rate float64) {
-	if c.prewarmMode == "off" {
+	// Only the follow mode sizes the pods by the rate; the other modes keep the active layout at its planned
+	// replicas (all warm), so they remain a clean point of comparison
+	if c.prewarmMode != "follow" {
 		return
 	}
 	now := time.Now()
