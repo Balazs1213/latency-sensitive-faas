@@ -61,6 +61,8 @@ type Configuration struct {
 	SwitchRateFactor float64 `env:"SWITCH_RATE_FACTOR" default:"0"`
 	// Capacity model: use the measured average component runtimes (span durations) instead of the profiled ones
 	MeasuredCapacity bool `env:"MEASURED_CAPACITY" default:"false"`
+	// Rate following: size the pods for the arrival rate expected when a pod requested now becomes ready
+	RateForecast bool `env:"RATE_FORECAST" default:"false"`
 }
 
 func Init() Configuration {

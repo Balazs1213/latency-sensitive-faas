@@ -20,7 +20,7 @@ const (
 	minConsecutiveDowngrade = 300
 	reuseDeployments        = true
 	unboostQuietPeriod      = 60 * time.Second // adaptive prewarm: scale the standby back after this long below the threshold
-	rateScaleDownHold       = 60 * time.Second // rate following: lower the pod count only after the rate needed fewer pods this long
+	rateScaleDownHold       = 60 * time.Second // rate following: scale-down hold until the pod startup time is measured
 )
 
 type MetricType string
@@ -66,11 +66,17 @@ type latencyController struct {
 	rateFollows                  map[string]*rateFollow // appId -> rate-following state of the active layout
 	measuredCapacity             bool                   // capacity model uses the measured component runtimes
 	componentRuntimes            map[string]map[string]ComponentRuntime // appId -> component -> measured runtime in the last metric window
+	startupPending               map[string]map[string]startupWatch     // appId -> "components@node" -> raised min-scale waiting for its pods
+	startupMean                  time.Duration                          // mean measured pod startup time (0 = not measured yet)
+	startupSamples               int                                    // number of pod startup measurements in the mean
+	rateForecast                 bool                                   // rate following sizes the pods for the forecast rate
+	rateHistory                  map[string][]ratePoint                 // appId -> measured rates of the last metric window
+
 }
 
 func NewController(composer *Composer, metrics MetricsReader, scenarioManager ScenarioManager,
 	delay time.Duration, deployNamespace string, availableNodeMemoryGb int, aggMetricType MetricType,
-	metricQueryTimeRange string, latencyDowngradeFactor float64, prewarmMode string, targetUtilization float64, boostRateFactor float64, switchRateFactor float64, measuredCapacity bool) Controller {
+	metricQueryTimeRange string, latencyDowngradeFactor float64, prewarmMode string, targetUtilization float64, boostRateFactor float64, switchRateFactor float64, measuredCapacity bool, rateForecast bool) Controller {
 
 	if prewarmMode != "one" && prewarmMode != "full" && prewarmMode != "adaptive" && prewarmMode != "follow" {
 		prewarmMode = "off"
@@ -78,6 +84,7 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 	log.Printf("Layout prewarm mode: %s (boost at %.2f of the layout capacity, utilization %.2f)", prewarmMode, boostRateFactor, targetUtilization)
 	log.Printf("Proactive switching: factor %.2f of the layout capacity (0 = off)", switchRateFactor)
 	log.Printf("Capacity model: measured component runtimes %t (false = profiled runtimes)", measuredCapacity)
+	log.Printf("Rate forecast: %t (pods sized for the rate expected after a pod startup)", rateForecast)
 
 	// Length of the metric window, e.g. "now-15s" -> 15s; the arrival rate is the trace count divided by it
 	metricWindow, err := time.ParseDuration(strings.TrimPrefix(metricQueryTimeRange, "now-"))
@@ -126,6 +133,9 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 		rateFollows:                  make(map[string]*rateFollow),
 		measuredCapacity:             measuredCapacity,
 		componentRuntimes:            make(map[string]map[string]ComponentRuntime),
+		startupPending:               make(map[string]map[string]startupWatch),
+		rateForecast:                 rateForecast,
+		rateHistory:                  make(map[string][]ratePoint),
 	}
 }
 
@@ -1041,6 +1051,29 @@ func (c *latencyController) rateAboveCapacity(app *FunctionApp, layoutKey string
 	return rate > c.switchRateFactor*c.layoutCapacity(app.Id, layout)
 }
 
+// compositionReadyPods returns how many pods of a layout composition's deployments on a node are ready
+func (c *latencyController) compositionReadyPods(app *FunctionApp, ci CompositionInfo, node string) int {
+	key := compositionKey(ci)
+	ready := 0
+	for _, fc := range app.Compositions {
+		if componentsKey(fc.Components) != key {
+			continue
+		}
+		for _, d := range fc.Deployments {
+			if d.Node != node {
+				continue
+			}
+			n, err := c.composer.DeploymentReadyPods(d)
+			if err != nil {
+				log.Printf("Failed to read the ready pods of deployment %s: %v", d.Id, err)
+				continue
+			}
+			ready += n
+		}
+	}
+	return ready
+}
+
 // upgradeReady reports whether the next larger layout can take the current rate right away. In follow mode its
 // standby pods follow the rate, so each of its compositions must have at least the pods the rate needs ready;
 // the other modes keep their standby at a fixed level and are not gated.
@@ -1051,27 +1084,11 @@ func (c *latencyController) upgradeReady(app *FunctionApp, rate float64) bool {
 	next := layoutUpgradePath[app.ActiveLayoutKey]
 	for node, ci := range app.LayoutCandidates[next] {
 		need := c.podsForRate(app.Id, ci, rate)
-		key := compositionKey(ci)
-		ready := 0
-		for _, fc := range app.Compositions {
-			if componentsKey(fc.Components) != key {
-				continue
-			}
-			for _, d := range fc.Deployments {
-				if d.Node != node {
-					continue
-				}
-				n, err := c.composer.DeploymentReadyPods(d)
-				if err != nil {
-					log.Printf("Failed to read the ready pods of deployment %s: %v", d.Id, err)
-					continue
-				}
-				ready += n
-			}
-		}
+		ready := c.compositionReadyPods(app, ci, node)
 		if ready < need {
-			log.Printf("Switch to %s waits for %s@%s: %d of %d pods ready", next, key, node, ready, need)
-			logPhase(app.Id, "switch_wait", next, key+"@"+node, float64(ready))
+			key := compositionKey(ci) + "@" + node
+			log.Printf("Switch to %s waits for %s: %d of %d pods ready", next, key, ready, need)
+			logPhase(app.Id, "switch_wait", next, key, float64(ready))
 			return false
 		}
 	}
@@ -1104,6 +1121,12 @@ func (c *latencyController) followRate(app *FunctionApp, rate float64) {
 	}
 	now := time.Now()
 
+	// Pod startup measurement: check whether the pods of earlier raised min-scales became ready
+	c.observeStartups(app, now)
+
+	// Rate forecast: size the pods for the rate expected when a pod requested now becomes ready
+	sizingRate := c.forecastRate(app.Id, rate, now)
+
 	// Target pods per composition; a composition shared by two layouts gets the larger target
 	type target struct {
 		ci   CompositionInfo
@@ -1120,7 +1143,7 @@ func (c *latencyController) followRate(app *FunctionApp, rate float64) {
 		for node, ci := range layout {
 			need := 1
 			if followed {
-				need = c.podsForRate(app.Id, ci, rate)
+				need = c.podsForRate(app.Id, ci, sizingRate)
 			}
 			key := compositionKey(ci) + "@" + node
 			if t, ok := targets[key]; !ok || need > t.need {
@@ -1158,11 +1181,17 @@ func (c *latencyController) followRate(app *FunctionApp, rate float64) {
 		if t.need >= current {
 			st.lastNeeded[key] = now
 		}
-		if t.need > current || (t.need < current && now.Sub(st.lastNeeded[key]) >= rateScaleDownHold) {
+		if t.need > current || (t.need < current && now.Sub(st.lastNeeded[key]) >= c.scaleDownHold()) {
 			st.pods[key] = t.need
-			log.Printf("Rate following %s: rate %.2f req/s, pod capacity %.2f req/s -> %d pods",
-				key, rate, c.podCapacity(app.Id, t.ci), t.need)
+			log.Printf("Rate following %s: rate %.2f req/s (sized for %.2f), pod capacity %.2f req/s -> %d pods",
+				key, rate, sizingRate, c.podCapacity(app.Id, t.ci), t.need)
 			logPhase(app.Id, "rate_scale", app.ActiveLayoutKey, key, float64(t.need))
+			// Pod startup measurement: from raising the min-scale until its pods are ready
+			if t.need > current {
+				c.watchStartup(app, key, t.ci, t.node, t.need, now)
+			} else {
+				delete(c.startupPending[app.Id], key)
+			}
 			// Run in the background: patching the cluster must not delay the controller tick
 			go c.setCompositionMinScale(app.Id, t.ci, t.node, t.need)
 		}
@@ -1193,4 +1222,93 @@ func (c *latencyController) setCompositionMinScale(appId string, ci CompositionI
 			log.Printf("Set min-scale of deployment %s to %d (rate following)", d.Id, minScale)
 		}
 	}
+}
+
+// startupWatch is a raised min-scale whose new pods are not ready yet
+type startupWatch struct {
+	since  time.Time
+	target int
+	ci     CompositionInfo
+	node   string
+}
+
+// watchStartup starts a pod startup measurement when a min-scale is raised above the pods ready now
+func (c *latencyController) watchStartup(app *FunctionApp, key string, ci CompositionInfo, node string, target int, now time.Time) {
+	if len(app.Compositions) == 0 {
+		return // deployments not loaded: the ready pods cannot be read
+	}
+	if c.compositionReadyPods(app, ci, node) >= target {
+		return // the pods already run (e.g. started by Knative itself): nothing to measure
+	}
+	if c.startupPending[app.Id] == nil {
+		c.startupPending[app.Id] = make(map[string]startupWatch)
+	}
+	c.startupPending[app.Id][key] = startupWatch{since: now, target: target, ci: ci, node: node}
+}
+
+// observeStartups completes the pending startup measurements whose pods became ready and keeps the mean pod
+// startup time; without loaded deployments the pending measurements are dropped, as they could not be timed
+func (c *latencyController) observeStartups(app *FunctionApp, now time.Time) {
+	pending := c.startupPending[app.Id]
+	if len(pending) == 0 {
+		return
+	}
+	if len(app.Compositions) == 0 {
+		delete(c.startupPending, app.Id)
+		return
+	}
+	for key, w := range pending {
+		if c.compositionReadyPods(app, w.ci, w.node) < w.target {
+			continue
+		}
+		d := now.Sub(w.since)
+		c.startupMean = (c.startupMean*time.Duration(c.startupSamples) + d) / time.Duration(c.startupSamples+1)
+		c.startupSamples++
+		delete(pending, key)
+		log.Printf("Pod startup of %s: %.1f s to %d ready pods (mean %.1f s over %d)",
+			key, d.Seconds(), w.target, c.startupMean.Seconds(), c.startupSamples)
+		logPhase(app.Id, "pod_startup", app.ActiveLayoutKey, key, d.Seconds())
+	}
+}
+
+// scaleDownHold is how long a pod the rate no longer needs is kept. By the ski rental rule it is kept as long as
+// starting it again takes, the measured mean pod startup time; until that is measured, the fixed fallback.
+func (c *latencyController) scaleDownHold() time.Duration {
+	if c.startupSamples > 0 {
+		return c.startupMean
+	}
+	return rateScaleDownHold
+}
+
+// ratePoint is one measured arrival rate
+type ratePoint struct {
+	t    time.Time
+	rate float64
+}
+
+// forecastRate is the arrival rate the pods are sized for. The measured rate is the mean of the last metric
+// window, so it describes the moment half a window ago; with the forecast on and a growing rate, it is
+// extrapolated by its growth over the last window to half a window plus one pod startup time ahead.
+// A falling rate is not extrapolated: scaling down is left to the hold time.
+func (c *latencyController) forecastRate(appId string, rate float64, now time.Time) float64 {
+	// Keep the measured rates of the last metric window
+	history := append(c.rateHistory[appId], ratePoint{t: now, rate: rate})
+	for len(history) > 1 && now.Sub(history[0].t) > c.metricWindow {
+		history = history[1:]
+	}
+	c.rateHistory[appId] = history
+
+	if !c.rateForecast || len(history) < 2 {
+		return rate
+	}
+	span := now.Sub(history[0].t).Seconds()
+	if span <= 0 {
+		return rate
+	}
+	growth := (rate - history[0].rate) / span // req/s per second
+	if growth <= 0 {
+		return rate
+	}
+	ahead := c.metricWindow.Seconds()/2 + c.startupMean.Seconds()
+	return rate + growth*ahead
 }
