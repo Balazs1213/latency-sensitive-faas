@@ -220,6 +220,82 @@ func (c metricsClient) QueryAverageAppRuntimes(timeRangeGte string) (map[string]
 	return c.queryAppRuntimes(timeRangeGte, metricAggName, metricAgg, extractorFunc)
 }
 
+// QueryComponentRuntimes returns, per app and span name, the average span duration (ms) and the span count
+// in the time range: the measured processing time of each component under the current load
+func (c metricsClient) QueryComponentRuntimes(timeRangeGte string) (map[string]map[string]core.ComponentRuntime, error) {
+	size := 1000
+	res, err := c.client.Search().
+		Index(tracesIndex).
+		Request(&search.Request{
+			Size: intPtr(0),
+			Query: &types.Query{
+				Bool: &types.BoolQuery{
+					Filter: []types.Query{
+						{
+							Range: map[string]types.RangeQuery{
+								"@timestamp": &types.DateRangeQuery{
+									Gte: strPtr(timeRangeGte),
+									Lte: strPtr("now"),
+								},
+							},
+						},
+						{
+							Term: map[string]types.TermQuery{
+								"processor.event": {
+									Value: "span",
+								},
+							},
+						},
+					},
+				},
+			},
+			Aggregations: map[string]types.Aggregations{
+				"apps": {
+					Terms: &types.TermsAggregation{Field: strPtr("labels.app_name"), Size: &size},
+					Aggregations: map[string]types.Aggregations{
+						"spans": {
+							Terms: &types.TermsAggregation{Field: strPtr("span.name"), Size: &size},
+							Aggregations: map[string]types.Aggregations{
+								"avg_duration_us": {
+									Avg: &types.AverageAggregation{Field: strPtr("span.duration.us")},
+								},
+							},
+						},
+					},
+				},
+			},
+		}).
+		Do(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("error querying component runtimes: %w", err)
+	}
+
+	result := make(map[string]map[string]core.ComponentRuntime)
+	appsAgg, ok := res.Aggregations["apps"].(*types.StringTermsAggregate)
+	if !ok {
+		return result, nil // no spans in the time range
+	}
+	for _, appBucket := range appsAgg.Buckets.([]types.StringTermsBucket) {
+		spansAgg, ok := appBucket.Aggregations["spans"].(*types.StringTermsAggregate)
+		if !ok {
+			continue
+		}
+		runtimes := make(map[string]core.ComponentRuntime)
+		for _, spanBucket := range spansAgg.Buckets.([]types.StringTermsBucket) {
+			avg, ok := spanBucket.Aggregations["avg_duration_us"].(*types.AvgAggregate)
+			if !ok || avg.Value == nil {
+				continue
+			}
+			runtimes[spanBucket.Key.(string)] = core.ComponentRuntime{
+				AvgMs: float64(*avg.Value) / 1000,
+				Count: int(spanBucket.DocCount),
+			}
+		}
+		result[appBucket.Key.(string)] = runtimes
+	}
+	return result, nil
+}
+
 func (c metricsClient) queryAppRuntimes(
 	timeRangeGte string,
 	metricAggName string,

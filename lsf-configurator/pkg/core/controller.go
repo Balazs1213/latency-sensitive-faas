@@ -64,17 +64,20 @@ type latencyController struct {
 	boostedSince                 map[string]time.Time // adaptive prewarm: appId -> when the standby layout was boosted
 	lastAboveBoost               map[string]time.Time // adaptive prewarm: appId -> last tick with the rate above the threshold
 	rateFollows                  map[string]*rateFollow // appId -> rate-following state of the active layout
+	measuredCapacity             bool                   // capacity model uses the measured component runtimes
+	componentRuntimes            map[string]map[string]ComponentRuntime // appId -> component -> measured runtime in the last metric window
 }
 
 func NewController(composer *Composer, metrics MetricsReader, scenarioManager ScenarioManager,
 	delay time.Duration, deployNamespace string, availableNodeMemoryGb int, aggMetricType MetricType,
-	metricQueryTimeRange string, latencyDowngradeFactor float64, prewarmMode string, targetUtilization float64, boostRateFactor float64, switchRateFactor float64) Controller {
+	metricQueryTimeRange string, latencyDowngradeFactor float64, prewarmMode string, targetUtilization float64, boostRateFactor float64, switchRateFactor float64, measuredCapacity bool) Controller {
 
 	if prewarmMode != "one" && prewarmMode != "full" && prewarmMode != "adaptive" && prewarmMode != "follow" {
 		prewarmMode = "off"
 	}
 	log.Printf("Layout prewarm mode: %s (boost at %.2f of the layout capacity, utilization %.2f)", prewarmMode, boostRateFactor, targetUtilization)
 	log.Printf("Proactive switching: factor %.2f of the layout capacity (0 = off)", switchRateFactor)
+	log.Printf("Capacity model: measured component runtimes %t (false = profiled runtimes)", measuredCapacity)
 
 	// Length of the metric window, e.g. "now-15s" -> 15s; the arrival rate is the trace count divided by it
 	metricWindow, err := time.ParseDuration(strings.TrimPrefix(metricQueryTimeRange, "now-"))
@@ -121,6 +124,8 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 		boostedSince:                 make(map[string]time.Time),
 		lastAboveBoost:               make(map[string]time.Time),
 		rateFollows:                  make(map[string]*rateFollow),
+		measuredCapacity:             measuredCapacity,
+		componentRuntimes:            make(map[string]map[string]ComponentRuntime),
 	}
 }
 
@@ -158,6 +163,14 @@ func (c *latencyController) Start(ctx context.Context) error {
 			if err != nil {
 				log.Printf("Error querying app runtime metrics: %v", err)
 				continue
+			}
+			// Measured capacity: the components' average runtimes in the same metric window
+			if c.measuredCapacity {
+				if measured, err := c.metrics.QueryComponentRuntimes(c.metricQueryTimeRange); err != nil {
+					log.Printf("Error querying component runtimes: %v", err)
+				} else {
+					c.componentRuntimes = measured
+				}
 			}
 			// Log runtimes at defined intervals
 			now := time.Now()
@@ -833,35 +846,38 @@ func (c *latencyController) ensureStandbyLayouts(app *FunctionApp) {
 
 
 // layoutCapacity is the arrival rate (req/s) a layout is sized for at the model's target utilization:
-// the minimum over its compositions of replicas * concurrency * utilization * 1000 / runtime of the composition
-func (c *latencyController) layoutCapacity(layout Layout) float64 {
+// the minimum over its compositions of the planned replicas times the capacity of one pod
+func (c *latencyController) layoutCapacity(appId string, layout Layout) float64 {
 	capacity := math.Inf(1)
 	for _, ci := range layout {
-		runtime := 0
-		for _, cp := range ci.ComponentProfiles {
-			runtime += cp.Runtime
-		}
-		if runtime <= 0 {
+		podCapacity := c.podCapacity(appId, ci)
+		if podCapacity <= 0 {
 			continue
 		}
-		concurrency := ci.TargetConcurrency
-		if concurrency < 1 {
-			concurrency = 1
-		}
-		compCapacity := float64(ci.RequiredReplicas*concurrency) * c.targetUtilization * 1000 / float64(runtime)
-		if compCapacity < capacity {
+		if compCapacity := float64(ci.RequiredReplicas) * podCapacity; compCapacity < capacity {
 			capacity = compCapacity
 		}
 	}
 	return capacity
 }
 
+// componentRuntime is the runtime (ms) of a component in the capacity model: with measured capacity and
+// enough spans in the last metric window the measured average, otherwise the profiled runtime
+func (c *latencyController) componentRuntime(appId string, cp ComponentProfile) float64 {
+	if c.measuredCapacity {
+		if m, ok := c.componentRuntimes[appId][cp.Name]; ok && m.Count >= minimalTraceCount {
+			return m.AvgMs
+		}
+	}
+	return float64(cp.Runtime)
+}
+
 // podCapacity is the arrival rate one pod of a composition serves at the model's target utilization:
 // (1000 / t) * C * U, the denominator of the framework's replica formula
-func (c *latencyController) podCapacity(ci CompositionInfo) float64 {
-	runtime := 0
+func (c *latencyController) podCapacity(appId string, ci CompositionInfo) float64 {
+	runtime := 0.0
 	for _, cp := range ci.ComponentProfiles {
-		runtime += cp.Runtime
+		runtime += c.componentRuntime(appId, cp)
 	}
 	if runtime <= 0 {
 		return 0
@@ -870,13 +886,13 @@ func (c *latencyController) podCapacity(ci CompositionInfo) float64 {
 	if concurrency < 1 {
 		concurrency = 1
 	}
-	return 1000 / float64(runtime) * float64(concurrency) * c.targetUtilization
+	return 1000 / runtime * float64(concurrency) * c.targetUtilization
 }
 
 // podsForRate applies the replica formula R = ceil(rate / podCapacity) to the measured arrival rate:
 // the pods a composition needs right now, at least one and at most its planned replicas
-func (c *latencyController) podsForRate(ci CompositionInfo, rate float64) int {
-	capacity := c.podCapacity(ci)
+func (c *latencyController) podsForRate(appId string, ci CompositionInfo, rate float64) int {
+	capacity := c.podCapacity(appId, ci)
 	if capacity <= 0 {
 		return ci.RequiredReplicas // no runtime profile: keep the planned replicas
 	}
@@ -942,7 +958,7 @@ func (c *latencyController) adaptStandby(app *FunctionApp, traceCount int) {
 		return
 	}
 	rate := float64(traceCount) / c.metricWindow.Seconds()
-	threshold := c.boostRateFactor * c.layoutCapacity(app.LayoutCandidates[app.ActiveLayoutKey])
+	threshold := c.boostRateFactor * c.layoutCapacity(app.Id, app.LayoutCandidates[app.ActiveLayoutKey])
 	now := time.Now()
 
 	if rate > threshold {
@@ -1021,7 +1037,7 @@ func (c *latencyController) rateAboveCapacity(app *FunctionApp, layoutKey string
 	if !ok {
 		return false
 	}
-	return rate > c.switchRateFactor*c.layoutCapacity(layout)
+	return rate > c.switchRateFactor*c.layoutCapacity(app.Id, layout)
 }
 
 // rateFollow is the rate-following state of one app
@@ -1066,7 +1082,7 @@ func (c *latencyController) followRate(app *FunctionApp, rate float64) {
 		for node, ci := range layout {
 			need := 1
 			if followed {
-				need = c.podsForRate(ci, rate)
+				need = c.podsForRate(app.Id, ci, rate)
 			}
 			key := compositionKey(ci) + "@" + node
 			if t, ok := targets[key]; !ok || need > t.need {
@@ -1106,6 +1122,8 @@ func (c *latencyController) followRate(app *FunctionApp, rate float64) {
 		}
 		if t.need > current || (t.need < current && now.Sub(st.lastNeeded[key]) >= rateScaleDownHold) {
 			st.pods[key] = t.need
+			log.Printf("Rate following %s: rate %.2f req/s, pod capacity %.2f req/s -> %d pods",
+				key, rate, c.podCapacity(app.Id, t.ci), t.need)
 			logPhase(app.Id, "rate_scale", app.ActiveLayoutKey, key, float64(t.need))
 			// Run in the background: patching the cluster must not delay the controller tick
 			go c.setCompositionMinScale(app.Id, t.ci, t.node, t.need)

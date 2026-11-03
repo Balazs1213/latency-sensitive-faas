@@ -59,6 +59,8 @@ type Configuration struct {
 	BoostRateFactor float64 `env:"BOOST_RATE_FACTOR" default:"0.75"`
 	// Proactive switching: upgrade when the arrival rate exceeds this share of the active layout's capacity (0 = off)
 	SwitchRateFactor float64 `env:"SWITCH_RATE_FACTOR" default:"0"`
+	// Capacity model: use the measured average component runtimes (span durations) instead of the profiled ones
+	MeasuredCapacity bool `env:"MEASURED_CAPACITY" default:"false"`
 }
 
 func Init() Configuration {

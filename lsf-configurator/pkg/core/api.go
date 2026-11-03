@@ -32,10 +32,17 @@ type AlertClient interface {
 	CreateOrUpdateRule(ctx context.Context, serviceName string, latencyThresholdMs int) (string, error)
 }
 
+// ComponentRuntime is the measured processing time of one component: the average duration of its spans
+type ComponentRuntime struct {
+	AvgMs float64 // average span duration in milliseconds
+	Count int     // number of spans the average is computed from
+}
+
 type MetricsReader interface {
 	QueryNodeMetrics() ([]NodeMetrics, error)
 	Query95thPercentileAppRuntimes(timeRangeGte string) (map[string]float64, map[string]int, error)
 	QueryAverageAppRuntimes(timeRangeGte string) (map[string]float64, map[string]int, error)
+	QueryComponentRuntimes(timeRangeGte string) (map[string]map[string]ComponentRuntime, error)
 	EnsureIndex(ctx context.Context, indexName string) error
 }
 
