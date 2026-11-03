@@ -8,6 +8,7 @@ import matplotlib
 matplotlib.use("Agg")  # no display on the VM, write PNG only
 import matplotlib.pyplot as plt
 import numpy as np
+from reconfig_breakdown import read_phases
 
 
 def to_us(iso):
@@ -24,19 +25,31 @@ def rolling_p95(t, lat, window_s=15):
         values.append(np.percentile(lat[mask], 95) if mask.any() else np.nan)
     return grid, values
 
+def switches_from_log(path):
+    """Switch bands from the controller log: each decision until the DNS update that follows it."""
+    events = read_phases(path)
+    bands = []
+    for i, e in enumerate(events):
+        if e["phase"] != "decision":
+            continue
+        # The next decision or DNS update; a DNS update only belongs to this decision if it comes first
+        later = [x for x in events[i + 1:] if x["phase"] in ("decision", "dns_updated")]
+        if later and later[0]["phase"] == "dns_updated":
+            bands.append((e["t"], later[0]["t"] - e["t"], e["layout"]))
+    return bands
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--run", required=True, help="run directory with traces.csv")
-    p.add_argument("--start", required=True, help="UTC time used as t=0")
+    p.add_argument("--start", help="UTC time used as t=0 (default: start of the first trace)")
     p.add_argument("--limit", type=float, help="latency limit in ms (optional)")
     p.add_argument("--switch", action="append", default=[],
                     help="switch start time and duration, e.g. 2026-10-19T12:13:51Z,32.7")
     p.add_argument("--title", default="End-to-end latency vs RPS")
     args = p.parse_args()
 
-    t0 = to_us(args.start)
     rows = list(csv.DictReader(open(os.path.join(args.run, "traces.csv"))))
+    t0 = to_us(args.start) if args.start else min(int(r["start_us"]) for r in rows)
     t = np.array([(int(r["start_us"]) - t0) / 1e6 for r in rows])
     lat = np.array([float(r["e2e_ms"]) for r in rows])
     keep = t >= 0
@@ -50,14 +63,24 @@ def main():
         ax.axhline(args.limit, color="black", linestyle="--",
                    label=f"Latency limit ({args.limit:.0f} ms)")
 
-    top = ax.get_ylim()[1]
-    for i, sw in enumerate(args.switch):
+    # Switch bands: from --switch if given, otherwise from the controller log of the run
+    bands = []
+    for sw in args.switch:
         start_iso, dur = sw.split(",")
-        dur = float(dur)
-        begin = (to_us(start_iso) - t0) / 1e6
+        bands.append(((to_us(start_iso) - t0) / 1e6, float(dur), None))
+    log_path = os.path.join(args.run, "controller.log")
+    if not args.switch and os.path.exists(log_path):
+        bands = [(ts - t0 / 1e6, dur, layout) for ts, dur, layout in switches_from_log(log_path)]
+
+    top = ax.get_ylim()[1]
+    arrows = {"max_rate": "↑ ", "min_rate": "↓ "}
+    for i, (begin, dur, layout) in enumerate(bands):
+        # Band width is the real switch duration, also after the end of the load
         ax.axvspan(begin, begin + dur, color="red", alpha=0.15,
                    label="Reconfiguration" if i == 0 else None)
-        ax.text(begin + dur / 2, top * 0.95, f"{dur:.1f} s", color="red", ha="center")
+        text = f"{dur:.2f} s" if dur < 1 else f"{dur:.1f} s"
+        ax.text(begin + dur / 2, top * 0.95, arrows.get(layout, "") + text, color="red", ha="center")
+        print(f"switch at {begin:.1f} s -> {layout}: {dur:.3f} s")
 
     ax.set_xlabel("Time (seconds from start)")
     ax.set_ylabel("Latency (ms)", color="tab:red")
