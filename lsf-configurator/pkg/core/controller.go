@@ -20,6 +20,7 @@ const (
 	minConsecutiveDowngrade = 300
 	reuseDeployments        = true
 	unboostQuietPeriod      = 60 * time.Second // adaptive prewarm: scale the standby back after this long below the threshold
+	rateScaleDownHold       = 60 * time.Second // rate following: lower the pod count only after the rate needed fewer pods this long
 )
 
 type MetricType string
@@ -62,6 +63,7 @@ type latencyController struct {
 	metricWindow                 time.Duration        // length of the metric query window (arrival rate = trace count / window)
 	boostedSince                 map[string]time.Time // adaptive prewarm: appId -> when the standby layout was boosted
 	lastAboveBoost               map[string]time.Time // adaptive prewarm: appId -> last tick with the rate above the threshold
+	rateFollows                  map[string]*rateFollow // appId -> rate-following state of the active layout
 }
 
 func NewController(composer *Composer, metrics MetricsReader, scenarioManager ScenarioManager,
@@ -118,6 +120,7 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 		metricWindow:                 metricWindow,
 		boostedSince:                 make(map[string]time.Time),
 		lastAboveBoost:               make(map[string]time.Time),
+		rateFollows:                  make(map[string]*rateFollow),
 	}
 }
 
@@ -199,6 +202,10 @@ func (c *latencyController) Start(ctx context.Context) error {
 				if c.prewarmMode == "adaptive" {
 					c.adaptStandby(app, traceCounts[appId])
 				}
+
+				
+				// Rate following: keep the active layout's warm pods at what the measured rate needs
+				c.followRate(app, float64(traceCounts[appId])/c.metricWindow.Seconds())
 
 				c.lastReconfigsMu.Lock()
 				last, ok := c.lastReconfigs[app.Id]
@@ -287,6 +294,10 @@ func (c *latencyController) Start(ctx context.Context) error {
 				if c.prewarmMode == "adaptive" {
 					c.adaptStandby(app, traceCounts[app.Id])
 				}
+				
+				// Rate following: without traffic the rate is zero, so the warm pods go down to one after the hold time
+				c.followRate(app, float64(traceCounts[app.Id])/c.metricWindow.Seconds())
+				
 				if app.ActiveLayoutKey == LayoutKeyMin {
 					continue
 				}
@@ -843,6 +854,40 @@ func (c *latencyController) layoutCapacity(layout Layout) float64 {
 	return capacity
 }
 
+// podCapacity is the arrival rate one pod of a composition serves at the model's target utilization:
+// (1000 / t) * C * U, the denominator of the framework's replica formula
+func (c *latencyController) podCapacity(ci CompositionInfo) float64 {
+	runtime := 0
+	for _, cp := range ci.ComponentProfiles {
+		runtime += cp.Runtime
+	}
+	if runtime <= 0 {
+		return 0
+	}
+	concurrency := ci.TargetConcurrency
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	return 1000 / float64(runtime) * float64(concurrency) * c.targetUtilization
+}
+
+// podsForRate applies the replica formula R = ceil(rate / podCapacity) to the measured arrival rate:
+// the pods a composition needs right now, at least one and at most its planned replicas
+func (c *latencyController) podsForRate(ci CompositionInfo, rate float64) int {
+	capacity := c.podCapacity(ci)
+	if capacity <= 0 {
+		return ci.RequiredReplicas // no runtime profile: keep the planned replicas
+	}
+	pods := int(math.Ceil(rate / capacity))
+	if pods < 1 {
+		pods = 1
+	}
+	if pods > ci.RequiredReplicas {
+		pods = ci.RequiredReplicas
+	}
+	return pods
+}
+
 // setLayoutMinScale sets the min-scale of every deployment of a layout candidate:
 // all required replicas when boosted, one warm pod otherwise
 func (c *latencyController) setLayoutMinScale(app *FunctionApp, layoutKey string, boost bool) {
@@ -975,4 +1020,86 @@ func (c *latencyController) rateAboveCapacity(app *FunctionApp, layoutKey string
 		return false
 	}
 	return rate > c.switchRateFactor*c.layoutCapacity(layout)
+}
+
+// rateFollow is the rate-following state of one app's active layout
+type rateFollow struct {
+	layoutKey  string               // the active layout this state belongs to
+	pods       map[string]int       // "components@node" -> min-scale last set by the controller
+	lastNeeded map[string]time.Time // "components@node" -> last tick the rate needed at least that many pods
+}
+
+// compositionKey is the components key of a layout composition, the same key the deployments are matched by
+func compositionKey(ci CompositionInfo) string {
+	names := make([]string, len(ci.ComponentProfiles))
+	for i, cp := range ci.ComponentProfiles {
+		names[i] = cp.Name
+	}
+	return componentsKey(names)
+}
+
+// followRate keeps the min-scale of the active layout's compositions at the pods the measured rate needs
+// (the replica formula with the measured rate): raised at once, lowered only after rateScaleDownHold.
+// A layout becomes active with all its planned replicas warm, so a new state starts from those.
+func (c *latencyController) followRate(app *FunctionApp, rate float64) {
+	if c.prewarmMode == "off" {
+		return
+	}
+	layout, ok := app.LayoutCandidates[app.ActiveLayoutKey]
+	if !ok {
+		return
+	}
+	now := time.Now()
+
+	st := c.rateFollows[app.Id]
+	if st == nil || st.layoutKey != app.ActiveLayoutKey {
+		st = &rateFollow{layoutKey: app.ActiveLayoutKey, pods: make(map[string]int), lastNeeded: make(map[string]time.Time)}
+		for node, ci := range layout {
+			key := compositionKey(ci) + "@" + node
+			st.pods[key] = ci.RequiredReplicas
+			st.lastNeeded[key] = now
+		}
+		c.rateFollows[app.Id] = st
+	}
+
+	for node, ci := range layout {
+		key := compositionKey(ci) + "@" + node
+		need := c.podsForRate(ci, rate)
+		current := st.pods[key]
+		if need >= current {
+			st.lastNeeded[key] = now
+		}
+		if need > current || (need < current && now.Sub(st.lastNeeded[key]) >= rateScaleDownHold) {
+			st.pods[key] = need
+			logPhase(app.Id, "rate_scale", app.ActiveLayoutKey, key, float64(need))
+			// Run in the background: patching the cluster must not delay the controller tick
+			go c.setCompositionMinScale(app.Id, ci, node, need)
+		}
+	}
+}
+
+// setCompositionMinScale sets the min-scale of a layout composition's deployments on one node
+func (c *latencyController) setCompositionMinScale(appId string, ci CompositionInfo, node string, minScale int) {
+	// Reload the app: compositions and their deployments are only loaded by GetFunctionApp
+	app, err := c.composer.GetFunctionApp(appId)
+	if err != nil || app == nil {
+		log.Printf("Failed to load app %s for min-scale change: %v", appId, err)
+		return
+	}
+	key := compositionKey(ci)
+	for _, fc := range app.Compositions {
+		if componentsKey(fc.Components) != key {
+			continue
+		}
+		for _, d := range fc.Deployments {
+			if d.Node != node {
+				continue
+			}
+			if err := c.composer.SetDeploymentMinScale(d, minScale); err != nil {
+				log.Printf("Failed to set min-scale of deployment %s: %v", d.Id, err)
+				continue
+			}
+			log.Printf("Set min-scale of deployment %s to %d (rate following)", d.Id, minScale)
+		}
+	}
 }
