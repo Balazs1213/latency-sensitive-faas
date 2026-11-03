@@ -70,7 +70,7 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 	delay time.Duration, deployNamespace string, availableNodeMemoryGb int, aggMetricType MetricType,
 	metricQueryTimeRange string, latencyDowngradeFactor float64, prewarmMode string, targetUtilization float64, boostRateFactor float64, switchRateFactor float64) Controller {
 
-	if prewarmMode != "one" && prewarmMode != "full" && prewarmMode != "adaptive" {
+	if prewarmMode != "one" && prewarmMode != "full" && prewarmMode != "adaptive" && prewarmMode != "follow" {
 		prewarmMode = "off"
 	}
 	log.Printf("Layout prewarm mode: %s (boost at %.2f of the layout capacity, utilization %.2f)", prewarmMode, boostRateFactor, targetUtilization)
