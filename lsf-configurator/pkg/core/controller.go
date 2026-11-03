@@ -56,7 +56,7 @@ type latencyController struct {
 	reconfigStartTimes           map[string]time.Time
 	lastLogTime                  time.Time
 	consecutiveDowngradeEligible map[string]int // appId -> count of consecutive eligible downgrade intervals
-	prewarmMode                  string               // "off", "one", "full" or "adaptive": warm standby level of the inactive layouts
+	prewarmMode                  string               // "off", "one", "full", "adaptive" or "follow": warm standby level of the inactive layouts
 	targetUtilization            float64              // utilization target of the layout model, used for the layout capacity
 	boostRateFactor              float64              // adaptive prewarm: boost threshold as a share of the active layout's capacity
 	switchRateFactor             float64              // proactive switching: upgrade at this share of the active layout's capacity (0 = off)
@@ -546,8 +546,10 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 					log.Printf("Reusing existing deployment %s for node %s", dep.Id, node)
 					logPhase(appId, "deployment_reused", "", dep.Id, 0)
 					// A reused deployment keeps its old min-scale: set it to the required replicas when it becomes
-					// active (upgrade, or any switch with prewarm) and to the standby level for standby layouts
-					if isUpgrade || standby || c.prewarmMode != "off" {
+					// active (upgrade, or any switch with prewarm) and to the standby level for standby layouts.
+					// In follow mode an activated layout keeps its pods: they already follow the rate.
+					followsRate := c.prewarmMode == "follow" && !standby
+					if !followsRate && (isUpgrade || standby || c.prewarmMode != "off") {
 						minScale := compositionInfo.RequiredReplicas
 						if standby && c.prewarmMode != "full" {
 							minScale = 1
@@ -1022,9 +1024,9 @@ func (c *latencyController) rateAboveCapacity(app *FunctionApp, layoutKey string
 	return rate > c.switchRateFactor*c.layoutCapacity(layout)
 }
 
-// rateFollow is the rate-following state of one app's active layout
+// rateFollow is the rate-following state of one app
 type rateFollow struct {
-	layoutKey  string               // the active layout this state belongs to
+	activeKey  string               // the active layout at the last update
 	pods       map[string]int       // "components@node" -> min-scale last set by the controller
 	lastNeeded map[string]time.Time // "components@node" -> last tick the rate needed at least that many pods
 }
@@ -1038,42 +1040,75 @@ func compositionKey(ci CompositionInfo) string {
 	return componentsKey(names)
 }
 
-// followRate keeps the min-scale of the active layout's compositions at the pods the measured rate needs
+// followRate keeps the min-scale of the followed layouts' compositions at the pods the measured rate needs
 // (the replica formula with the measured rate): raised at once, lowered only after rateScaleDownHold.
-// A layout becomes active with all its planned replicas warm, so a new state starts from those.
+// The active layout is always followed. In follow mode the next larger layout is followed too, so it holds
+// the pods an immediate switch at the current rate would need, and every other layout waits with one pod.
 func (c *latencyController) followRate(app *FunctionApp, rate float64) {
 	if c.prewarmMode == "off" {
 		return
 	}
-	layout, ok := app.LayoutCandidates[app.ActiveLayoutKey]
-	if !ok {
-		return
-	}
 	now := time.Now()
 
-	st := c.rateFollows[app.Id]
-	if st == nil || st.layoutKey != app.ActiveLayoutKey {
-		st = &rateFollow{layoutKey: app.ActiveLayoutKey, pods: make(map[string]int), lastNeeded: make(map[string]time.Time)}
-		for node, ci := range layout {
-			key := compositionKey(ci) + "@" + node
-			st.pods[key] = ci.RequiredReplicas
-			st.lastNeeded[key] = now
+	// Target pods per composition; a composition shared by two layouts gets the larger target
+	type target struct {
+		ci   CompositionInfo
+		node string
+		need int
+	}
+	targets := make(map[string]*target)
+	for layoutKey, layout := range app.LayoutCandidates {
+		followed := layoutKey == app.ActiveLayoutKey ||
+			(c.prewarmMode == "follow" && layoutKey == layoutUpgradePath[app.ActiveLayoutKey])
+		if !followed && c.prewarmMode != "follow" {
+			continue // the other modes manage their standby layouts themselves
 		}
-		c.rateFollows[app.Id] = st
+		for node, ci := range layout {
+			need := 1
+			if followed {
+				need = c.podsForRate(ci, rate)
+			}
+			key := compositionKey(ci) + "@" + node
+			if t, ok := targets[key]; !ok || need > t.need {
+				targets[key] = &target{ci: ci, node: node, need: need}
+			}
+		}
 	}
 
-	for node, ci := range layout {
-		key := compositionKey(ci) + "@" + node
-		need := c.podsForRate(ci, rate)
-		current := st.pods[key]
-		if need >= current {
+	st := c.rateFollows[app.Id]
+	if st == nil {
+		st = &rateFollow{pods: make(map[string]int), lastNeeded: make(map[string]time.Time)}
+		c.rateFollows[app.Id] = st
+	}
+	// A newly active layout starts with all its planned replicas warm, except in follow mode,
+	// where its pods already follow the rate and keep their current value
+	if st.activeKey != app.ActiveLayoutKey {
+		for node, ci := range app.LayoutCandidates[app.ActiveLayoutKey] {
+			key := compositionKey(ci) + "@" + node
+			if _, seen := st.pods[key]; !seen || c.prewarmMode != "follow" {
+				st.pods[key] = ci.RequiredReplicas
+				st.lastNeeded[key] = now
+			}
+		}
+		st.activeKey = app.ActiveLayoutKey
+	}
+
+	for key, t := range targets {
+		current, seen := st.pods[key]
+		if !seen {
+			// A standby composition not seen yet: deployed with one warm pod
+			current = 1
+			st.pods[key] = current
 			st.lastNeeded[key] = now
 		}
-		if need > current || (need < current && now.Sub(st.lastNeeded[key]) >= rateScaleDownHold) {
-			st.pods[key] = need
-			logPhase(app.Id, "rate_scale", app.ActiveLayoutKey, key, float64(need))
+		if t.need >= current {
+			st.lastNeeded[key] = now
+		}
+		if t.need > current || (t.need < current && now.Sub(st.lastNeeded[key]) >= rateScaleDownHold) {
+			st.pods[key] = t.need
+			logPhase(app.Id, "rate_scale", app.ActiveLayoutKey, key, float64(t.need))
 			// Run in the background: patching the cluster must not delay the controller tick
-			go c.setCompositionMinScale(app.Id, ci, node, need)
+			go c.setCompositionMinScale(app.Id, t.ci, t.node, t.need)
 		}
 	}
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Switch the configurator to one measured configuration (image + prewarm mode) and record it.
-# Usage: tools/measure/use_config.sh <baseline|off|one|full|adaptive|proactive> [run_dir]
+# Usage: tools/measure/use_config.sh <baseline|off|one|full|adaptive|proactive|follow> [run_dir]
 set -euo pipefail
 
 NS=configurator
@@ -10,7 +10,7 @@ BASELINE_IMAGE=${BASELINE_IMAGE:-lsf-configurator:baseline}
 # The dev image is tagged with the last commit that changed the framework code (run inside the repository)
 DEV_IMAGE=${DEV_IMAGE:-lsf-configurator:dev-$(git log -1 --format=%h -- lsf-configurator)}
 
-config=${1:?"usage: use_config.sh <baseline|off|one|full|adaptive|proactive> [run_dir]"}
+config=${1:?"usage: use_config.sh <baseline|off|one|full|adaptive|proactive|follow> [run_dir]"}
 run_dir=${2:-}
 
 # Set the image, the prewarm mode and the proactive switch factor (always all three, so no
@@ -35,6 +35,10 @@ case "$config" in
   proactive)
     # Warm standby (full) plus switching on the arrival rate
     apply "$DEV_IMAGE" full 1.0
+    ;;
+  follow)
+    # Standby pods follow the arrival rate (instead of full's fixed replicas), plus switching on the arrival rate
+    apply "$DEV_IMAGE" follow 1.0
     ;;
   *)
     echo "unknown config: $config" >&2
