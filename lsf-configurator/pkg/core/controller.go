@@ -232,7 +232,8 @@ func (c *latencyController) Start(ctx context.Context) error {
 				// Determine action: proactively on the arrival rate, otherwise on the latency
 				var handler func(*FunctionApp) (string, error)
 				rate := float64(traceCounts[appId]) / c.metricWindow.Seconds()
-				if layoutUpgradePath[app.ActiveLayoutKey] != "" && c.rateAboveCapacity(app, app.ActiveLayoutKey, rate) {
+				rateUpgrade := layoutUpgradePath[app.ActiveLayoutKey] != "" && c.rateAboveCapacity(app, app.ActiveLayoutKey, rate)
+				if rateUpgrade && c.upgradeReady(app, rate) {
 					// Proactive upgrade: the active layout reached the rate it was sized for
 					logPhase(app.Id, "rate_trigger", app.ActiveLayoutKey, "", rate)
 					handler = c.handleLatencyViolation
@@ -251,7 +252,7 @@ func (c *latencyController) Start(ctx context.Context) error {
 					c.lastReconfigsMu.Lock()
 					c.consecutiveDowngradeEligible[app.Id] = 0
 					c.lastReconfigsMu.Unlock()
-				} else if runtime < float64(app.LatencyLimit)*c.latencyDowngradeFactor &&
+				} else if !rateUpgrade && runtime < float64(app.LatencyLimit)*c.latencyDowngradeFactor &&
 					!c.rateAboveCapacity(app, layoutDowngradePath[app.ActiveLayoutKey], rate) {
 					// With proactive switching, never downgrade to a layout that the current rate would overload
 					// Oscillation defense for downgrade: track consecutive intervals
@@ -1038,6 +1039,43 @@ func (c *latencyController) rateAboveCapacity(app *FunctionApp, layoutKey string
 		return false
 	}
 	return rate > c.switchRateFactor*c.layoutCapacity(app.Id, layout)
+}
+
+// upgradeReady reports whether the next larger layout can take the current rate right away. In follow mode its
+// standby pods follow the rate, so each of its compositions must have at least the pods the rate needs ready;
+// the other modes keep their standby at a fixed level and are not gated.
+func (c *latencyController) upgradeReady(app *FunctionApp, rate float64) bool {
+	if c.prewarmMode != "follow" {
+		return true
+	}
+	next := layoutUpgradePath[app.ActiveLayoutKey]
+	for node, ci := range app.LayoutCandidates[next] {
+		need := c.podsForRate(app.Id, ci, rate)
+		key := compositionKey(ci)
+		ready := 0
+		for _, fc := range app.Compositions {
+			if componentsKey(fc.Components) != key {
+				continue
+			}
+			for _, d := range fc.Deployments {
+				if d.Node != node {
+					continue
+				}
+				n, err := c.composer.DeploymentReadyPods(d)
+				if err != nil {
+					log.Printf("Failed to read the ready pods of deployment %s: %v", d.Id, err)
+					continue
+				}
+				ready += n
+			}
+		}
+		if ready < need {
+			log.Printf("Switch to %s waits for %s@%s: %d of %d pods ready", next, key, node, ready, need)
+			logPhase(app.Id, "switch_wait", next, key+"@"+node, float64(ready))
+			return false
+		}
+	}
+	return true
 }
 
 // rateFollow is the rate-following state of one app

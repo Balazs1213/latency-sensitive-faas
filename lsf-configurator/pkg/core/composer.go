@@ -207,6 +207,11 @@ func (c *Composer) SetDeploymentMinScale(dep *Deployment, minScale int) error {
 	return nil
 }
 
+// DeploymentReadyPods returns how many pods of a deployment are ready to serve
+func (c *Composer) DeploymentReadyPods(dep *Deployment) (int, error) {
+	return c.scaleClient.ReadyPods(context.TODO(), dep.Namespace, dep.Id)
+}
+
 func (c *Composer) UpdateDNSRecord(appId, namespace, targetDeploymentId string) error {
 	return c.dnsClient.EnsureDNSRecord(context.TODO(), namespace, appId, targetDeploymentId)
 }

@@ -74,4 +74,5 @@ type DNSClient interface {
 
 type ScaleClient interface {
 	SetMinScale(ctx context.Context, namespace, serviceName string, minScale int) error
+	ReadyPods(ctx context.Context, namespace, serviceName string) (int, error)
 }
