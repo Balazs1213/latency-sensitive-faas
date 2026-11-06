@@ -1,0 +1,26 @@
+version: "2"
+
+linters:
+  # The standard set: errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - gocyclo # cyclomatic complexity of functions
+    - gocognit # cognitive complexity (how hard a function is to read)
+    - funlen # function length
+    - dupl # duplicated code blocks
+    - revive # style and naming
+    - unparam # unused function parameters and results
+    - misspell # misspelled English words in comments
+  settings:
+    gocyclo:
+      min-complexity: 15
+    gocognit:
+      min-complexity: 20
+    funlen:
+      lines: 80
+      statements: 50
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
