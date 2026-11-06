@@ -220,28 +220,21 @@ func (c *latencyController) Start(ctx context.Context) error {
 				}
 
 				// Rate following: keep the active layout's warm pods at what the measured rate needs
-				c.followRate(app, float64(traceCounts[appId])/c.metricWindow.Seconds())
+				c.followRate(app, c.arrivalRate(traceCounts[appId]))
 
-				c.lastReconfigsMu.Lock()
-				last, ok := c.lastReconfigs[app.Id]
-				if ok && time.Since(last) < c.cooldownPeriod {
-					// log.Printf("Skipping reconfiguration for app %s due to cooldown (last at %v)", app.Id, last)
-					c.lastReconfigsMu.Unlock()
+				if c.inCooldown(app.Id) {
 					continue
 				}
-				c.lastReconfigsMu.Unlock()
 
 				// Determine action: proactively on the arrival rate, otherwise on the latency
 				var handler func(*FunctionApp) (string, error)
-				rate := float64(traceCounts[appId]) / c.metricWindow.Seconds()
+				rate := c.arrivalRate(traceCounts[appId])
 				rateUpgrade := layoutUpgradePath[app.ActiveLayoutKey] != "" && c.rateAboveCapacity(app, app.ActiveLayoutKey, rate)
 				if rateUpgrade && c.upgradeReady(app, rate) {
 					// Proactive upgrade: the active layout reached the rate it was sized for
 					logPhase(app.Id, "rate_trigger", app.ActiveLayoutKey, "", rate)
 					handler = c.handleLatencyViolation
-					c.lastReconfigsMu.Lock()
-					c.consecutiveDowngradeEligible[app.Id] = 0
-					c.lastReconfigsMu.Unlock()
+					c.resetDowngradeCount(app.Id)
 				} else if runtime > float64(app.LatencyLimit) {
 					// Check trace count for upgrades to avoid reconfigurations based on insufficient data
 					count, ok := traceCounts[appId]
@@ -251,9 +244,7 @@ func (c *latencyController) Start(ctx context.Context) error {
 					}
 					handler = c.handleLatencyViolation
 					// Reset downgrade counter on upgrade
-					c.lastReconfigsMu.Lock()
-					c.consecutiveDowngradeEligible[app.Id] = 0
-					c.lastReconfigsMu.Unlock()
+					c.resetDowngradeCount(app.Id)
 				} else if c.prewarmMode == "follow" && c.switchRateFactor > 0 {
 					// Follow mode: switch back on the arrival rate after the ski rental hold, not on a low latency
 					if rateUpgrade || !c.rateDowngradeDue(app, rate) {
@@ -264,10 +255,7 @@ func (c *latencyController) Start(ctx context.Context) error {
 					!c.rateAboveCapacity(app, layoutDowngradePath[app.ActiveLayoutKey], rate) {
 					// With proactive switching, never downgrade to a layout that the current rate would overload
 					// Oscillation defense for downgrade: track consecutive intervals
-					c.lastReconfigsMu.Lock()
-					c.consecutiveDowngradeEligible[app.Id]++
-					count := c.consecutiveDowngradeEligible[app.Id]
-					c.lastReconfigsMu.Unlock()
+					count := c.addDowngradeCount(app.Id, 1)
 					if count < minConsecutiveDowngrade {
 						// log.Printf("App %s eligible for downgrade (%d/%d consecutive intervals)", app.Id, count, minConsecutiveDowngrade)
 						continue
@@ -275,9 +263,7 @@ func (c *latencyController) Start(ctx context.Context) error {
 					handler = c.handleLayoutDowngrade
 				} else {
 					// Reset counter if not eligible for downgrade
-					c.lastReconfigsMu.Lock()
-					c.consecutiveDowngradeEligible[app.Id] = 0
-					c.lastReconfigsMu.Unlock()
+					c.resetDowngradeCount(app.Id)
 					continue
 				}
 
@@ -292,9 +278,7 @@ func (c *latencyController) Start(ctx context.Context) error {
 				} else {
 					log.Printf("App %s transitioned to layout %s. Deploying...", app.Id, nextLayoutKey)
 				}
-				c.lastReconfigsMu.Lock()
-				c.lastReconfigs[app.Id] = time.Now()
-				c.lastReconfigsMu.Unlock()
+				c.markReconfigured(app.Id)
 
 				log.Printf("Reconfiguration in progress for app %s, applying cooldown period", app.Id)
 			}
@@ -318,33 +302,24 @@ func (c *latencyController) Start(ctx context.Context) error {
 				}
 
 				// Rate following: without traffic the rate is zero, so the warm pods go down to one after the hold time
-				c.followRate(app, float64(traceCounts[app.Id])/c.metricWindow.Seconds())
+				c.arrivalRate(traceCounts[app.Id])
 
 				if app.ActiveLayoutKey == LayoutKeyMin {
 					continue
 				}
-				c.lastReconfigsMu.Lock()
-				last, ok := c.lastReconfigs[app.Id]
-				if ok && time.Since(last) < c.cooldownPeriod {
-					c.lastReconfigsMu.Unlock()
+				if c.inCooldown(app.Id) {
 					continue
 				}
-				c.lastReconfigsMu.Unlock()
 
 				// Increment downgrade counter for apps with no runtime, use a higher increment to trigger faster downgrade
-				c.lastReconfigsMu.Lock()
-				c.consecutiveDowngradeEligible[app.Id] += 20
-				count := c.consecutiveDowngradeEligible[app.Id]
-				c.lastReconfigsMu.Unlock()
+				count := c.addDowngradeCount(app.Id, 20)
 
 				if count < minConsecutiveDowngrade {
 					// log.Printf("App %s has no runtime (%d/%d consecutive intervals)", app.Id, count, minConsecutiveDowngrade)
 					continue
 				}
 
-				c.lastReconfigsMu.Lock()
-				c.consecutiveDowngradeEligible[app.Id] = 0
-				c.lastReconfigsMu.Unlock()
+				c.resetDowngradeCount(app.Id)
 
 				log.Printf("No runtime reported for app %s for %d consecutive intervals, downgrading to minimal layout.", app.Id, count)
 				nextLayoutKey, err := c.handleLayoutChange(app, layoutDowngradePath, false)
@@ -354,13 +329,47 @@ func (c *latencyController) Start(ctx context.Context) error {
 				}
 				if nextLayoutKey != "" {
 					log.Printf("App %s transitioned to layout %s due to missing runtimes. Deploying...", app.Id, nextLayoutKey)
-					c.lastReconfigsMu.Lock()
-					c.lastReconfigs[app.Id] = time.Now()
-					c.lastReconfigsMu.Unlock()
+					c.markReconfigured(app.Id)
 				}
 			}
 		}
 	}
+}
+
+// inCooldown reports whether the app was reconfigured less than the cooldown period ago
+func (c *latencyController) inCooldown(appId string) bool {
+	c.lastReconfigsMu.Lock()
+	defer c.lastReconfigsMu.Unlock()
+	last, ok := c.lastReconfigs[appId]
+	return ok && time.Since(last) < c.cooldownPeriod
+}
+
+// markReconfigured starts the cooldown period of the app
+func (c *latencyController) markReconfigured(appId string) {
+	c.lastReconfigsMu.Lock()
+	defer c.lastReconfigsMu.Unlock()
+	c.lastReconfigs[appId] = time.Now()
+}
+
+// resetDowngradeCount clears the app's count of consecutive downgrade-eligible ticks
+func (c *latencyController) resetDowngradeCount(appId string) {
+	c.lastReconfigsMu.Lock()
+	defer c.lastReconfigsMu.Unlock()
+	c.consecutiveDowngradeEligible[appId] = 0
+}
+
+// addDowngradeCount raises the app's count of consecutive downgrade-eligible ticks by step
+// and returns the new count
+func (c *latencyController) addDowngradeCount(appId string, step int) int {
+	c.lastReconfigsMu.Lock()
+	defer c.lastReconfigsMu.Unlock()
+	c.consecutiveDowngradeEligible[appId] += step
+	return c.consecutiveDowngradeEligible[appId]
+}
+
+// arrivalRate converts a trace count of the metric window to an arrival rate (req/s)
+func (c *latencyController) arrivalRate(traceCount int) float64 {
+	return float64(traceCount) / c.metricWindow.Seconds()
 }
 
 func (c *latencyController) RegisterFunctionApp(creationData FunctionAppCreationData) (*FunctionApp, error) {
