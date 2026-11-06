@@ -8,5 +8,6 @@ const (
 
 func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Ok"))
+	// Best-effort response write: a failure usually means the client has gone away.
+	_, _ = w.Write([]byte("Ok"))
 }

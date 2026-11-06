@@ -13,13 +13,15 @@ func SaveMultiPartFile(fileHeader *multipart.FileHeader, saveLocation string) er
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	// Opened for reading only, so a failed close cannot lose data.
+	defer func() { _ = file.Close() }()
 	savePath := filepath.Join(saveLocation, fileHeader.Filename)
 	outFile, err := os.Create(savePath)
 	if err != nil {
 		return err
 	}
-	defer outFile.Close()
+	// Best-effort close: this function does not report close errors to its caller.
+	defer func() { _ = outFile.Close() }()
 
 	_, err = io.Copy(outFile, file)
 	if err != nil {
@@ -34,7 +36,8 @@ func CopyFileToDstFolder(source string, dstFolder string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to open source file: %v", err)
 	}
-	defer srcFile.Close()
+	// Opened for reading only, so a failed close cannot lose data.
+	defer func() { _ = srcFile.Close() }()
 
 	_, fileName := filepath.Split(source)
 	destPath := filepath.Join(dstFolder, fileName)
@@ -43,7 +46,8 @@ func CopyFileToDstFolder(source string, dstFolder string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to create destination file: %v", err)
 	}
-	defer dstFile.Close()
+	// Best-effort close: this function does not report close errors to its caller.
+	defer func() { _ = dstFile.Close() }()
 
 	_, err = io.Copy(dstFile, srcFile)
 	if err != nil {

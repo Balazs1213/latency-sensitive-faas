@@ -96,7 +96,8 @@ func readRequirements(filePath string) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	// Opened for reading only, so a failed close cannot lose data.
+	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -113,7 +114,8 @@ func writeRequirements(filePath string, deps map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	// Best-effort close: this function does not report close errors to its caller.
+	defer func() { _ = file.Close() }()
 
 	for dep := range deps {
 		if _, err := file.WriteString(dep + "\n"); err != nil {

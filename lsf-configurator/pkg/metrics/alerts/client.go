@@ -40,7 +40,9 @@ func (c *alertClient) EnsureAlertConnector(ctx context.Context, connectorName, i
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	// The response body is fully handled here, so a failed close has no consequence.
+	// The body is passed as an argument because resp is reassigned in this function.
+	defer func(body io.Closer) { _ = body.Close() }(resp.Body)
 
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
@@ -79,7 +81,9 @@ func (c *alertClient) EnsureAlertConnector(ctx context.Context, connectorName, i
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	// The response body is fully handled here, so a failed close has no consequence.
+	// The body is passed as an argument because resp is reassigned in this function.
+	defer func(body io.Closer) { _ = body.Close() }(resp.Body)
 
 	data, _ = io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
@@ -112,7 +116,8 @@ func (c *alertClient) DeleteRule(ctx context.Context, ruleID string) error {
 	if err != nil {
 		return fmt.Errorf("failed to execute delete request: %w", err)
 	}
-	defer resp.Body.Close()
+	// The response body is fully handled here, so a failed close has no consequence.
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
@@ -199,7 +204,8 @@ func (c *alertClient) CreateOrUpdateRule(ctx context.Context, serviceName string
 	if err != nil {
 		return "", fmt.Errorf("request error: %w", err)
 	}
-	defer resp.Body.Close()
+	// The response body is fully handled here, so a failed close has no consequence.
+	defer func() { _ = resp.Body.Close() }()
 
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
@@ -231,7 +237,8 @@ func (c *alertClient) FindRuleByServiceName(serviceName string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	// The response body is fully handled here, so a failed close has no consequence.
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)

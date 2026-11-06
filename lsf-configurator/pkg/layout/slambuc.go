@@ -204,7 +204,7 @@ func (c *slambucCalculator) estimateReplicasPerGroup(layout map[string][]core.Co
 			totalRuntime += comp.Runtime
 			totalMemory += comp.Memory
 		}
-				// The entry component (first profile) receives the external input rate (first link's rate)
+		// The entry component (first profile) receives the external input rate (first link's rate)
 		entryName, entryRate := "", 0.0
 		if len(scenario.Profiles) > 0 && len(scenario.Links) > 0 {
 			entryName = scenario.Profiles[0].Name

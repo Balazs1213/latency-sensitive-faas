@@ -43,5 +43,7 @@ func (h *HandlerMetrics) getAllAppMetrics(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metrics)
+	if err := json.NewEncoder(w).Encode(metrics); err != nil {
+		log.Printf("Error writing metrics response: %v", err)
+	}
 }

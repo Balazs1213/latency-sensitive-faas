@@ -50,7 +50,8 @@ func (h *HandlerDeployments) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(deployment)
+	// Best-effort response write: a failure usually means the client has gone away.
+	_ = json.NewEncoder(w).Encode(deployment)
 }
 
 func (h *HandlerDeployments) putRoutingTable(w http.ResponseWriter, r *http.Request) {

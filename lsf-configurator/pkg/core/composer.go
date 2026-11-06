@@ -252,8 +252,8 @@ func (c *Composer) AddFunctionComposition(appId string, components []string, ima
 	}
 
 	if image != "" {
-		fc.Build.Image = image
-		fc.Build.Timestamp = createBuildTimestamp()
+		fc.Image = image
+		fc.Timestamp = createBuildTimestamp()
 		fc.Status = BuildStatusBuilt
 	} else {
 		go func() {
@@ -262,7 +262,9 @@ func (c *Composer) AddFunctionComposition(appId string, components []string, ima
 			if r.Err != nil {
 				log.Errorf("Building of function composition with id %v failed: %v", fc.Id, r.Err)
 				fc.Status = BuildStatusError
-				c.fcRepo.Save(fc)
+				if err := c.fcRepo.Save(fc); err != nil {
+					log.Errorf("Failed to save function composition with id %s: %v", fc.Id, err)
+				}
 				return
 			}
 			log.Infof("Successfully submitted build for function composition with id %v", fc.Id)
@@ -289,7 +291,9 @@ func (c *Composer) DeleteFunctionComposition(fcId string) error {
 			if r.Err != nil {
 				log.Errorf("Deleting of deployment with id %v failed: %v", deployment.Id, r.Err)
 				fc.Status = BuildStatusError
-				c.fcRepo.Save(fc)
+				if err := c.fcRepo.Save(fc); err != nil {
+					log.Errorf("Failed to save function composition with id %s: %v", fc.Id, err)
+				}
 				return
 			}
 			log.Infof("Successfully deleted deployment with id %v", deployment.Id)
@@ -420,14 +424,14 @@ func (c *Composer) NotifyBuildReady(fcId, imageURL string, status string) {
 		return
 	}
 
-	fc.Build.Image = imageURL
-	fc.Build.Timestamp = createBuildTimestamp()
+	fc.Image = imageURL
+	fc.Timestamp = createBuildTimestamp()
 	fc.Status = BuildStatusBuilt
 	if err := c.fcRepo.Save(fc); err != nil {
 		log.Errorf("Failed to save function composition with id %s: %v", fc.Id, err)
 		return
 	}
-	log.Infof("Successfully built function composition with id %v. Image: %v", fc.Id, fc.Build.Image)
+	log.Infof("Successfully built function composition with id %v. Image: %v", fc.Id, fc.Image)
 
 	deployments, err := c.deploymentRepo.GetByFunctionCompositionID(fc.Id)
 	if err != nil {
@@ -475,7 +479,7 @@ func (c *Composer) setRoutingTable(deployment *Deployment, table RoutingTable) e
 }
 
 func (c *Composer) startDeployment(deployment *Deployment, fc *FunctionComposition) <-chan Result {
-	resultChan := c.scheduler.AddTask(c.deployTask(*deployment, fc.Build.Image, fc.FunctionAppId), MaxRetries)
+	resultChan := c.scheduler.AddTask(c.deployTask(*deployment, fc.Image, fc.FunctionAppId), MaxRetries)
 	go func(dep *Deployment, fc *FunctionComposition) {
 		r := <-resultChan
 		if r.Err != nil {

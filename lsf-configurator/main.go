@@ -33,7 +33,8 @@ var resultsClient core.ResultsClient
 
 func main() {
 	logFile := configureLogging()
-	defer logFile.Close()
+	// The process is exiting, so a failed close of the log file has no consequence.
+	defer func() { _ = logFile.Close() }()
 
 	conf = config.Init()
 	if !conf.VerboseLogs {

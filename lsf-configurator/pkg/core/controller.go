@@ -55,16 +55,16 @@ type latencyController struct {
 	metricQueryTimeRange         string
 	reconfigStartTimes           map[string]time.Time
 	lastLogTime                  time.Time
-	consecutiveDowngradeEligible map[string]int // appId -> count of consecutive eligible downgrade intervals
-	prewarmMode                  string               // "off", "one", "full", "adaptive" or "follow": warm standby level of the inactive layouts
-	targetUtilization            float64              // utilization target of the layout model, used for the layout capacity
-	boostRateFactor              float64              // adaptive prewarm: boost threshold as a share of the active layout's capacity
-	switchRateFactor             float64              // proactive switching: upgrade at this share of the active layout's capacity (0 = off)
-	metricWindow                 time.Duration        // length of the metric query window (arrival rate = trace count / window)
-	boostedSince                 map[string]time.Time // adaptive prewarm: appId -> when the standby layout was boosted
-	lastAboveBoost               map[string]time.Time // adaptive prewarm: appId -> last tick with the rate above the threshold
-	rateFollows                  map[string]*rateFollow // appId -> rate-following state of the active layout
-	measuredCapacity             bool                   // capacity model uses the measured component runtimes
+	consecutiveDowngradeEligible map[string]int                         // appId -> count of consecutive eligible downgrade intervals
+	prewarmMode                  string                                 // "off", "one", "full", "adaptive" or "follow": warm standby level of the inactive layouts
+	targetUtilization            float64                                // utilization target of the layout model, used for the layout capacity
+	boostRateFactor              float64                                // adaptive prewarm: boost threshold as a share of the active layout's capacity
+	switchRateFactor             float64                                // proactive switching: upgrade at this share of the active layout's capacity (0 = off)
+	metricWindow                 time.Duration                          // length of the metric query window (arrival rate = trace count / window)
+	boostedSince                 map[string]time.Time                   // adaptive prewarm: appId -> when the standby layout was boosted
+	lastAboveBoost               map[string]time.Time                   // adaptive prewarm: appId -> last tick with the rate above the threshold
+	rateFollows                  map[string]*rateFollow                 // appId -> rate-following state of the active layout
+	measuredCapacity             bool                                   // capacity model uses the measured component runtimes
 	componentRuntimes            map[string]map[string]ComponentRuntime // appId -> component -> measured runtime in the last metric window
 	startupPending               map[string]map[string]startupWatch     // appId -> "components@node" -> raised min-scale waiting for its pods
 	startupMean                  time.Duration                          // mean measured pod startup time (0 = not measured yet)
@@ -93,7 +93,7 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 		log.Printf("Warning: cannot parse the metric window from '%s', assuming 15s", metricQueryTimeRange)
 		metricWindow = 15 * time.Second
 	}
-		
+
 	if aggMetricType != MetricTypeP95 && aggMetricType != MetricTypeAverage {
 		log.Printf("Warning: Invalid metric type '%s' provided. Defaulting to P95.", aggMetricType)
 		aggMetricType = MetricTypeP95
@@ -138,7 +138,6 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 		rateForecast:                 rateForecast,
 		rateHistory:                  make(map[string][]ratePoint),
 		downgradeSince:               make(map[string]time.Time),
-		
 	}
 }
 
@@ -229,7 +228,6 @@ func (c *latencyController) Start(ctx context.Context) error {
 					c.adaptStandby(app, traceCounts[appId])
 				}
 
-				
 				// Rate following: keep the active layout's warm pods at what the measured rate needs
 				c.followRate(app, float64(traceCounts[appId])/c.metricWindow.Seconds())
 
@@ -327,10 +325,10 @@ func (c *latencyController) Start(ctx context.Context) error {
 				if c.prewarmMode == "adaptive" {
 					c.adaptStandby(app, traceCounts[app.Id])
 				}
-				
+
 				// Rate following: without traffic the rate is zero, so the warm pods go down to one after the hold time
 				c.followRate(app, float64(traceCounts[app.Id])/c.metricWindow.Seconds())
-				
+
 				if app.ActiveLayoutKey == LayoutKeyMin {
 					continue
 				}
@@ -864,7 +862,6 @@ func (c *latencyController) ensureStandbyLayouts(app *FunctionApp) {
 	}
 }
 
-
 // layoutCapacity is the arrival rate (req/s) a layout is sized for at the model's target utilization:
 // the minimum over its compositions of the planned replicas times the capacity of one pod
 func (c *latencyController) layoutCapacity(appId string, layout Layout) float64 {
@@ -1006,7 +1003,6 @@ func (c *latencyController) adaptStandby(app *FunctionApp, traceCount int) {
 	}
 }
 
-
 // removeInactiveDeployments deletes every deployment of the app that is not part of its active layout
 func (c *latencyController) removeInactiveDeployments(appId string) {
 	// Reload the app: compositions and their deployments are only loaded by GetFunctionApp
@@ -1045,7 +1041,6 @@ func (c *latencyController) removeInactiveDeployments(appId string) {
 		}
 	}
 }
-
 
 // rateAboveCapacity reports whether proactive switching is on and the arrival rate exceeds the configured
 // share of the layout's capacity (the rate the layout was sized for at the model's target utilization)

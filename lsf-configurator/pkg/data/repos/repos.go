@@ -25,7 +25,8 @@ func (r *functionAppRepo) Save(app *core.FunctionApp) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	// Rollback after a successful Commit returns sql.ErrTxDone, which is expected.
+	defer func() { _ = tx.Rollback() }()
 
 	componentsJSON, err := json.Marshal(app.Components)
 	if err != nil {
@@ -107,7 +108,8 @@ func (r *functionAppRepo) GetByID(id string) (*core.FunctionApp, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	// Read-only query, so a failed close cannot affect the result.
+	defer func() { _ = rows.Close() }()
 
 	compRepo := NewFunctionCompositionRepository(r.db)
 	for rows.Next() {
@@ -132,7 +134,8 @@ func (r *functionAppRepo) GetAll() ([]*core.FunctionApp, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	// Read-only query, so a failed close cannot affect the result.
+	defer func() { _ = rows.Close() }()
 
 	var apps []*core.FunctionApp
 	for rows.Next() {
@@ -347,7 +350,8 @@ func (r *deploymentRepo) GetByFunctionCompositionID(functionCompositionID string
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	// Read-only query, so a failed close cannot affect the result.
+	defer func() { _ = rows.Close() }()
 
 	deployments := make([]*core.Deployment, 0)
 	for rows.Next() {
@@ -383,7 +387,8 @@ func (r *deploymentRepo) GetByFunctionAppID(functionAppID string) ([]*core.Deplo
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	// Read-only query, so a failed close cannot affect the result.
+	defer func() { _ = rows.Close() }()
 
 	var deployments []*core.Deployment
 	for rows.Next() {

@@ -49,5 +49,6 @@ func (h *HandlerResults) get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(results)
+	// Best-effort response write: a failure usually means the client has gone away.
+	_ = json.NewEncoder(w).Encode(results)
 }

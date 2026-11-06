@@ -47,7 +47,8 @@ func (h *HandlerApps) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(apps)
+	// Best-effort response write: a failure usually means the client has gone away.
+	_ = json.NewEncoder(w).Encode(apps)
 }
 
 func (h *HandlerApps) get(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +59,8 @@ func (h *HandlerApps) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(app)
+	// Best-effort response write: a failure usually means the client has gone away.
+	_ = json.NewEncoder(w).Encode(app)
 }
 
 func (h *HandlerApps) create(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +109,8 @@ func (h *HandlerApps) create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HandlerApps) bulkCreate(w http.ResponseWriter, r *http.Request) {
-	r.ParseMultipartForm(10 << 20) // 10MB limit
+	// A parse failure leaves the json form value empty, which Unmarshal rejects below.
+	_ = r.ParseMultipartForm(10 << 20) // 10MB limit
 
 	jsonStr := r.FormValue("json")
 	var payload BulkCreateRequest
