@@ -71,6 +71,7 @@ type latencyController struct {
 	startupSamples               int                                    // number of pod startup measurements in the mean
 	rateForecast                 bool                                   // rate following sizes the pods for the forecast rate
 	rateHistory                  map[string][]ratePoint                 // appId -> measured rates of the last metric window
+	downgradeSince               map[string]time.Time                   // appId -> since when the rate has fitted the smaller layout (follow mode)
 
 }
 
@@ -136,6 +137,8 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 		startupPending:               make(map[string]map[string]startupWatch),
 		rateForecast:                 rateForecast,
 		rateHistory:                  make(map[string][]ratePoint),
+		downgradeSince:               make(map[string]time.Time),
+		
 	}
 }
 
@@ -262,6 +265,12 @@ func (c *latencyController) Start(ctx context.Context) error {
 					c.lastReconfigsMu.Lock()
 					c.consecutiveDowngradeEligible[app.Id] = 0
 					c.lastReconfigsMu.Unlock()
+				} else if c.prewarmMode == "follow" && c.switchRateFactor > 0 {
+					// Follow mode: switch back on the arrival rate after the ski rental hold, not on a low latency
+					if rateUpgrade || !c.rateDowngradeDue(app, rate) {
+						continue
+					}
+					handler = c.handleLayoutDowngrade
 				} else if !rateUpgrade && runtime < float64(app.LatencyLimit)*c.latencyDowngradeFactor &&
 					!c.rateAboveCapacity(app, layoutDowngradePath[app.ActiveLayoutKey], rate) {
 					// With proactive switching, never downgrade to a layout that the current rate would overload
@@ -1313,4 +1322,26 @@ func (c *latencyController) forecastRate(appId string, rate float64, now time.Ti
 	}
 	ahead := c.metricWindow.Seconds()/2 + c.startupMean.Seconds()
 	return rate + growth*ahead
+}
+
+// rateDowngradeDue reports whether a follow mode app can switch back to the smaller layout: the arrival rate has
+// fitted the smaller layout's capacity for the scale-down hold. By the ski rental rule the larger layout is kept
+// as long as starting a pod takes; the smaller layout waits warm, so the switch back and a later switch up are fast.
+func (c *latencyController) rateDowngradeDue(app *FunctionApp, rate float64) bool {
+	smaller := layoutDowngradePath[app.ActiveLayoutKey]
+	if smaller == "" || c.rateAboveCapacity(app, smaller, rate) {
+		delete(c.downgradeSince, app.Id)
+		return false
+	}
+	since, ok := c.downgradeSince[app.Id]
+	if !ok {
+		c.downgradeSince[app.Id] = time.Now()
+		return false
+	}
+	if time.Since(since) < c.scaleDownHold() {
+		return false
+	}
+	delete(c.downgradeSince, app.Id)
+	logPhase(app.Id, "rate_downgrade", app.ActiveLayoutKey, "", rate)
+	return true
 }
