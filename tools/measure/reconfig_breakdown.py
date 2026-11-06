@@ -130,6 +130,38 @@ def first(events, phase, after, before=float("inf")):
     times = [e["t"] for e in events if e["phase"] == phase and after <= e["t"] <= before]
     return times[0] if times else None
 
+def pod_average(run):
+    """Mean number of ready function pods (d-*) while the requests ran, from pods.csv: the resource cost."""
+    pods_path = os.path.join(run, "pods.csv")
+    if not os.path.exists(pods_path):
+        return None
+    traces = list(csv.DictReader(open(os.path.join(run, "traces.csv"))))
+    t0 = min(int(r["start_us"]) for r in traces) / 1e6
+    t1 = max(int(r["end_us"]) for r in traces) / 1e6
+    ready = {}
+    for r in csv.DictReader(open(pods_path)):
+        t = float(r["t"])
+        if r["service"].startswith("d-") and t0 <= t <= t1:
+            ready[t] = ready.get(t, 0) + int(r["ready"])
+    ts = sorted(ready)
+    if len(ts) < 2:
+        return None
+    pod_seconds = sum(ready[a] * (b - a) for a, b in zip(ts, ts[1:]))
+    return round(pod_seconds / (ts[-1] - ts[0]), 2)
+
+
+def summary_row(run, results, stats, split):
+    """The main figures of a run in one row, for tables across runs (summarize.py)."""
+    layouts = [r["layout"] for r in results]
+    row = {"run": os.path.basename(os.path.normpath(run)),
+           "upgrades": layouts.count("max_rate"), "downgrades": layouts.count("min_rate"),
+           "avg_pods": pod_average(run)}
+    row.update({k: stats.get(k) for k in ["requests", "complete", "over_limit", "within_limit_pct",
+                                          "p50_ms", "p95_ms", "p99_ms", "max_ms", "excess_s"]})
+    for name, s in split.items():  # around_switch, rest
+        row.update({f"{name}_{k}": s.get(k) for k in ["requests", "over_limit", "within_limit_pct", "excess_s"]})
+    return row
+
 
 def main():
     p = argparse.ArgumentParser()
@@ -210,6 +242,14 @@ def main():
 
     with open(os.path.join(args.run, "breakdown.json"), "w") as f:
         json.dump({"switches": results, "requests": stats, "split": split}, f, indent=1, default=float)
+
+    
+    # One-row summary of the run, for tables across runs (tools/measure/summarize.py)
+    row = summary_row(args.run, results, stats, split)
+    with open(os.path.join(args.run, "summary.csv"), "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(row))
+        w.writeheader()
+        w.writerow(row)     
 
 if __name__ == "__main__":
     main()
