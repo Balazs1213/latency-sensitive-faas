@@ -76,8 +76,8 @@ func NewComposer(
 // --- FUNCTION APPS ---
 
 // GetFunctionApp returns the function app with the given ID.
-func (c *Composer) GetFunctionApp(appId string) (*FunctionApp, error) {
-	return c.functionAppRepo.GetByID(appId)
+func (c *Composer) GetFunctionApp(appID string) (*FunctionApp, error) {
+	return c.functionAppRepo.GetByID(appID)
 }
 
 // ListFunctionApps returns all function apps.
@@ -141,36 +141,36 @@ func (c *Composer) UpdateFunctionApp(app *FunctionApp) error {
 
 // DeleteFunctionApp deletes a function app. Its deployments, routing tables, source directory and DNS record are
 // removed asynchronously, so the app record is deleted before they are gone.
-func (c *Composer) DeleteFunctionApp(appId string) error {
-	app, err := c.functionAppRepo.GetByID(appId)
+func (c *Composer) DeleteFunctionApp(appID string) error {
+	app, err := c.functionAppRepo.GetByID(appID)
 	if err != nil || app == nil {
-		return fmt.Errorf("function app with id %s does not exist", appId)
+		return fmt.Errorf("function app with id %s does not exist", appID)
 	}
 
 	// delete all deployments of the app
-	deployments, err := c.deploymentRepo.GetByFunctionAppID(appId)
+	deployments, err := c.deploymentRepo.GetByFunctionAppID(appID)
 	if err != nil {
-		return fmt.Errorf("failed to get deployments for function app %s: %w", appId, err)
+		return fmt.Errorf("failed to get deployments for function app %s: %w", appID, err)
 	}
 
 	for _, d := range deployments {
 
-		go func(deploymentId string, sourcePath string) {
+		go func(deploymentID string, sourcePath string) {
 			resultChan := c.scheduler.AddTask(c.deleteTask(*d), MaxRetries)
 
 			r := <-resultChan
 			if r.Err != nil {
-				log.Errorf("Deleting deployment with id %v failed: %v", deploymentId, r.Err)
+				log.Errorf("Deleting deployment with id %v failed: %v", deploymentID, r.Err)
 			}
-			log.Infof("Successfully deleted deployment with id %v", deploymentId)
+			log.Infof("Successfully deleted deployment with id %v", deploymentID)
 			err = filesystem.DeleteDir(sourcePath)
 			if err != nil {
 				log.Errorf("could not delete app source directory: %s", err.Error())
 			}
 
-			err = c.routingClient.DeleteRoutingTable(deploymentId)
+			err = c.routingClient.DeleteRoutingTable(deploymentID)
 			if err != nil {
-				log.Errorf("failed to delete routing table for deployment %s: %v", deploymentId, err)
+				log.Errorf("failed to delete routing table for deployment %s: %v", deploymentID, err)
 			}
 		}(d.Id, app.SourcePath)
 	}
@@ -183,7 +183,7 @@ func (c *Composer) DeleteFunctionApp(appId string) error {
 		}()
 	}
 
-	if err := c.functionAppRepo.Delete(appId); err != nil {
+	if err := c.functionAppRepo.Delete(appID); err != nil {
 		return fmt.Errorf("failed to delete function app: %w", err)
 	}
 	return nil
@@ -230,19 +230,19 @@ func (c *Composer) DeploymentReadyPods(dep *Deployment) (int, error) {
 }
 
 // UpdateDNSRecord points the DNS record of an app's entry point to the given deployment.
-func (c *Composer) UpdateDNSRecord(appId, namespace, targetDeploymentId string) error {
-	return c.dnsClient.EnsureDNSRecord(context.TODO(), namespace, appId, targetDeploymentId)
+func (c *Composer) UpdateDNSRecord(appID, namespace, targetDeploymentID string) error {
+	return c.dnsClient.EnsureDNSRecord(context.TODO(), namespace, appID, targetDeploymentID)
 }
 
 // --- FUNCTION COMPOSITIONS ---
 
 // AddFunctionComposition adds a function composition of the given components to an app. With an image the
 // composition is marked as built; otherwise its build is started asynchronously.
-func (c *Composer) AddFunctionComposition(appId string, components []string, image string) (*FunctionComposition, error) {
-	fcApp, err := c.functionAppRepo.GetByID(appId)
+func (c *Composer) AddFunctionComposition(appID string, components []string, image string) (*FunctionComposition, error) {
+	fcApp, err := c.functionAppRepo.GetByID(appID)
 	if err != nil || fcApp == nil {
-		log.Errorf("function app with id %s does not exist", appId)
-		return nil, fmt.Errorf("function app with id %s does not exist", appId)
+		log.Errorf("function app with id %s does not exist", appID)
+		return nil, fmt.Errorf("function app with id %s does not exist", appID)
 	}
 
 	id := uuid.New()
@@ -265,7 +265,7 @@ func (c *Composer) AddFunctionComposition(appId string, components []string, ima
 
 	fc := &FunctionComposition{
 		Id:            "fc-" + id,
-		FunctionAppId: appId,
+		FunctionAppId: appID,
 		Components:    components,
 		Files:         files,
 		Status:        BuildStatusPending,
@@ -300,10 +300,10 @@ func (c *Composer) AddFunctionComposition(appId string, components []string, ima
 
 // DeleteFunctionComposition deletes the deployments of a function composition and then the composition itself,
 // asynchronously. If a deployment cannot be deleted, the composition is kept and its status is set to error.
-func (c *Composer) DeleteFunctionComposition(fcId string) error {
-	fc, err := c.fcRepo.GetByID(fcId)
+func (c *Composer) DeleteFunctionComposition(fcID string) error {
+	fc, err := c.fcRepo.GetByID(fcID)
 	if err != nil || fc == nil {
-		return fmt.Errorf("function composition with id %s does not exist", fcId)
+		return fmt.Errorf("function composition with id %s does not exist", fcID)
 	}
 
 	go func() {
@@ -321,7 +321,7 @@ func (c *Composer) DeleteFunctionComposition(fcId string) error {
 			log.Infof("Successfully deleted deployment with id %v", deployment.Id)
 		}
 		log.Infof("Successfully deleted all deployments for function composition with id %v", fc.Id)
-		if err := c.fcRepo.Delete(fcId); err != nil {
+		if err := c.fcRepo.Delete(fcID); err != nil {
 			log.Errorf("failed to delete function composition: %w", err)
 		}
 	}()
@@ -334,24 +334,24 @@ func (c *Composer) DeleteFunctionComposition(fcId string) error {
 // CreateFcDeployment creates a deployment of a function composition and stores its routing table; a missing scale
 // or missing resources get the default values. A deployment of a composition that is not built yet starts when
 // NotifyBuildReady reports the image. The returned channel delivers the deployment result in both cases.
-func (c *Composer) CreateFcDeployment(fcId, namespace, node string, routingTable RoutingTable, scale Scale, resources Resources) (*Deployment, <-chan Result, error) {
-	fc, err := c.fcRepo.GetByID(fcId)
+func (c *Composer) CreateFcDeployment(fcID, namespace, node string, routingTable RoutingTable, scale Scale, resources Resources) (*Deployment, <-chan Result, error) {
+	fc, err := c.fcRepo.GetByID(fcID)
 	if err != nil || fc == nil {
-		return nil, nil, fmt.Errorf("function composition with id %s does not exist", fcId)
+		return nil, nil, fmt.Errorf("function composition with id %s does not exist", fcID)
 	}
 
 	if scale.MinReplicas == 0 && scale.MaxReplicas == 0 && scale.TargetConcurrency == 0 {
-		log.Warnf("Scale was not provided for deployment of function composition %s, using default values", fcId)
+		log.Warnf("Scale was not provided for deployment of function composition %s, using default values", fcID)
 		scale = DefaultScaleValues()
 	}
 	if resources.Memory == 0 && resources.CPU == 0 {
-		log.Warnf("Resources were not provided for deployment of function composition %s, using default values", fcId)
+		log.Warnf("Resources were not provided for deployment of function composition %s, using default values", fcID)
 		resources = DefaultResources()
 	}
 
 	deployment := Deployment{
 		Id:                    "d-" + uuid.New(),
-		FunctionCompositionId: fcId,
+		FunctionCompositionId: fcID,
 		Namespace:             namespace,
 		Node:                  node,
 		RoutingTable:          routingTable,
@@ -365,7 +365,7 @@ func (c *Composer) CreateFcDeployment(fcId, namespace, node string, routingTable
 		resultChan = c.startDeployment(&deployment, fc)
 	} else {
 		deployment.Status = DeploymentStatusWaitingForBuild
-		log.Infof("Function composition with id %s is not built yet, deployment will be started after build is ready", fcId)
+		log.Infof("Function composition with id %s is not built yet, deployment will be started after build is ready", fcID)
 		ch := make(chan Result, 1)
 		resultChan = ch
 
@@ -393,18 +393,18 @@ func (c *Composer) CreateFcDeployment(fcId, namespace, node string, routingTable
 
 // DeleteFcDeployment deletes the routing table and the record of a deployment and schedules the removal of its
 // Knative service. The returned channel delivers the result of the removal.
-func (c *Composer) DeleteFcDeployment(deploymentId string) (<-chan Result, error) {
-	deployment, err := c.deploymentRepo.GetByID(deploymentId)
+func (c *Composer) DeleteFcDeployment(deploymentID string) (<-chan Result, error) {
+	deployment, err := c.deploymentRepo.GetByID(deploymentID)
 	if err != nil || deployment == nil {
-		return nil, fmt.Errorf("deployment with id %s does not exist", deploymentId)
+		return nil, fmt.Errorf("deployment with id %s does not exist", deploymentID)
 	}
 
-	err = c.routingClient.DeleteRoutingTable(deploymentId)
+	err = c.routingClient.DeleteRoutingTable(deploymentID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete routing table: %w", err)
 	}
 
-	err = c.deploymentRepo.Delete(deploymentId)
+	err = c.deploymentRepo.Delete(deploymentID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete deployment: %w", err)
 	}
@@ -414,15 +414,15 @@ func (c *Composer) DeleteFcDeployment(deploymentId string) (<-chan Result, error
 }
 
 // SetRoutingTable replaces the routing table of a deployment in the routing-table store and in the database.
-func (c *Composer) SetRoutingTable(deploymentId string, table RoutingTable) error {
-	deployment, err := c.deploymentRepo.GetByID(deploymentId)
+func (c *Composer) SetRoutingTable(deploymentID string, table RoutingTable) error {
+	deployment, err := c.deploymentRepo.GetByID(deploymentID)
 	if err != nil || deployment == nil {
-		return fmt.Errorf("deployment with id %s does not exist", deploymentId)
+		return fmt.Errorf("deployment with id %s does not exist", deploymentID)
 	}
 
 	err = c.setRoutingTable(deployment, table)
 	if err != nil {
-		log.Errorf("failed to set routing table for deployment %s: %v", deploymentId, err)
+		log.Errorf("failed to set routing table for deployment %s: %v", deploymentID, err)
 		return err
 	}
 	return nil
@@ -430,11 +430,11 @@ func (c *Composer) SetRoutingTable(deploymentId string, table RoutingTable) erro
 
 // NotifyBuildReady handles the build notification of a function composition: it records the image, or the error
 // status of a failed build, and starts the deployments that were waiting for the build.
-func (c *Composer) NotifyBuildReady(fcId, imageURL string, status string) {
+func (c *Composer) NotifyBuildReady(fcID, imageURL string, status string) {
 	c.builder.NotifyBuildFinished()
-	fc, err := c.fcRepo.GetByID(fcId)
+	fc, err := c.fcRepo.GetByID(fcID)
 	if err != nil || fc == nil {
-		log.Errorf("build notify failed, fc with id %s does not exist", fcId)
+		log.Errorf("build notify failed, fc with id %s does not exist", fcID)
 		return
 	}
 
@@ -446,7 +446,7 @@ func (c *Composer) NotifyBuildReady(fcId, imageURL string, status string) {
 
 	// If the build failed, set status to failed
 	if strings.ToLower(status) == "failed" {
-		log.Errorf("Build for function composition %s failed", fcId)
+		log.Errorf("Build for function composition %s failed", fcID)
 		fc.Status = BuildStatusError
 		if err := c.fcRepo.Save(fc); err != nil {
 			log.Errorf("Failed to save function composition with id %s: %v", fc.Id, err)
@@ -543,9 +543,9 @@ func (c *Composer) buildTask(fc FunctionComposition, runtime, sourcePath string)
 	}
 }
 
-func (c *Composer) deployTask(deployment Deployment, image, appId string) func() (interface{}, error) {
+func (c *Composer) deployTask(deployment Deployment, image, appID string) func() (interface{}, error) {
 	return func() (interface{}, error) {
-		return nil, c.knClient.Deploy(context.TODO(), deployment, image, appId)
+		return nil, c.knClient.Deploy(context.TODO(), deployment, image, appID)
 	}
 }
 

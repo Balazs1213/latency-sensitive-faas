@@ -58,7 +58,7 @@ func (h *HandlerDeployments) create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HandlerDeployments) putRoutingTable(w http.ResponseWriter, r *http.Request) {
-	deploymentId := r.PathValue("deployment_id")
+	deploymentID := r.PathValue("deployment_id")
 
 	var rt core.RoutingTable
 	if err := json.NewDecoder(r.Body).Decode(&rt); err != nil {
@@ -66,7 +66,7 @@ func (h *HandlerDeployments) putRoutingTable(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	err := h.composer.SetRoutingTable(deploymentId, rt)
+	err := h.composer.SetRoutingTable(deploymentID, rt)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

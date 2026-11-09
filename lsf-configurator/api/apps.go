@@ -58,8 +58,8 @@ func (h *HandlerApps) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HandlerApps) get(w http.ResponseWriter, r *http.Request) {
-	appId := r.PathValue("id")
-	app, err := h.composer.GetFunctionApp(appId)
+	appID := r.PathValue("id")
+	app, err := h.composer.GetFunctionApp(appID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -161,7 +161,7 @@ func (h *HandlerApps) bulkCreate(w http.ResponseWriter, r *http.Request) {
 	createdApp = app
 
 	// Map temporary IDs to real IDs for function compositions
-	compositionIdMap := make(map[string]string)
+	compositionIDMap := make(map[string]string)
 
 	for _, composition := range payload.FunctionCompositions {
 		fc, err := h.composer.AddFunctionComposition(app.Id, composition.Components, composition.Image)
@@ -170,15 +170,15 @@ func (h *HandlerApps) bulkCreate(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		compositionIdMap[composition.TempId] = fc.Id
+		compositionIDMap[composition.TempId] = fc.Id
 		createdCompositions = append(createdCompositions, fc)
 	}
 
 	// Map temporary deployment IDs to real deployment IDs
-	deploymentIdMap := make(map[string]string)
+	deploymentIDMap := make(map[string]string)
 
 	for _, deployment := range payload.Deployments {
-		realCompositionId, exists := compositionIdMap[deployment.TempFunctionCompositionId]
+		realCompositionID, exists := compositionIDMap[deployment.TempFunctionCompositionId]
 		if !exists {
 			h.composer.RollbackBulk(createdApp, createdCompositions, createdDeployments)
 			http.Error(w, "Invalid FunctionCompositionId in deployment", http.StatusBadRequest)
@@ -186,20 +186,20 @@ func (h *HandlerApps) bulkCreate(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Create deployment with an empty routing table
-		dep, _, err := h.composer.CreateFcDeployment(realCompositionId, deployment.Namespace,
+		dep, _, err := h.composer.CreateFcDeployment(realCompositionID, deployment.Namespace,
 			deployment.Node, core.RoutingTable{}, core.Scale{MinReplicas: 0, MaxReplicas: 0}, core.Resources{Memory: 512, CPU: 1000})
 		if err != nil {
 			h.composer.RollbackBulk(createdApp, createdCompositions, createdDeployments)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		deploymentIdMap[deployment.TempId] = dep.Id
+		deploymentIDMap[deployment.TempId] = dep.Id
 		createdDeployments = append(createdDeployments, dep)
 	}
 
 	// Translate routing tables and set them
 	for _, deployment := range payload.Deployments {
-		realDeploymentId, exists := deploymentIdMap[deployment.TempId]
+		realDeploymentID, exists := deploymentIDMap[deployment.TempId]
 		if !exists {
 			h.composer.RollbackBulk(createdApp, createdCompositions, createdDeployments)
 			http.Error(w, "Invalid deployment ID", http.StatusBadRequest)
@@ -219,7 +219,7 @@ func (h *HandlerApps) bulkCreate(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 
-				translatedDeploymentId, exists := deploymentIdMap[route.Function]
+				translatedDeploymentID, exists := deploymentIDMap[route.Function]
 				if !exists {
 					h.composer.RollbackBulk(createdApp, createdCompositions, createdDeployments)
 					http.Error(w, "Invalid function reference in routing table", http.StatusBadRequest)
@@ -227,13 +227,13 @@ func (h *HandlerApps) bulkCreate(w http.ResponseWriter, r *http.Request) {
 				}
 				translatedRoutes = append(translatedRoutes, core.Route{
 					To:       route.To,
-					Function: translatedDeploymentId,
+					Function: translatedDeploymentID,
 				})
 			}
 			translatedRoutingTable[component] = translatedRoutes
 		}
 
-		if err := h.composer.SetRoutingTable(realDeploymentId, translatedRoutingTable); err != nil {
+		if err := h.composer.SetRoutingTable(realDeploymentID, translatedRoutingTable); err != nil {
 			h.composer.RollbackBulk(createdApp, createdCompositions, createdDeployments)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -244,8 +244,8 @@ func (h *HandlerApps) bulkCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HandlerApps) delete(w http.ResponseWriter, r *http.Request) {
-	appId := r.PathValue("id")
-	err := h.composer.DeleteFunctionApp(appId)
+	appID := r.PathValue("id")
+	err := h.composer.DeleteFunctionApp(appID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -255,7 +255,7 @@ func (h *HandlerApps) delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HandlerApps) updateLatencyLimit(w http.ResponseWriter, r *http.Request) {
-	appId := r.PathValue("id")
+	appID := r.PathValue("id")
 	var req UpdateLatencyLimitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -266,7 +266,7 @@ func (h *HandlerApps) updateLatencyLimit(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	app, err := h.composer.GetFunctionApp(appId)
+	app, err := h.composer.GetFunctionApp(appID)
 	if err != nil || app == nil {
 		http.Error(w, "App not found", http.StatusNotFound)
 		return

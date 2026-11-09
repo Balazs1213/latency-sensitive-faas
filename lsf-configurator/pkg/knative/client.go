@@ -86,7 +86,7 @@ func (c *Client) Init(ctx context.Context, fc core.FunctionComposition, runtime,
 
 // Deploy deploys a deployment as a Knative service pinned to its node, with its scale and resources and with
 // environment variables that name the deployment, the app and the result store.
-func (c *Client) Deploy(ctx context.Context, deployment core.Deployment, image, appId string) error {
+func (c *Client) Deploy(ctx context.Context, deployment core.Deployment, image, appID string) error {
 	f := fn.Function{
 		Name:      deployment.Id,
 		Namespace: deployment.Namespace,
@@ -120,7 +120,7 @@ func (c *Client) Deploy(ctx context.Context, deployment core.Deployment, image, 
 			},
 		},
 		Run: fn.RunSpec{
-			Envs: getDeployEnvs(appId, deployment.Id, c.resultStoreAddress),
+			Envs: getDeployEnvs(appID, deployment.Id, c.resultStoreAddress),
 		},
 	}
 
@@ -163,12 +163,12 @@ func copyNonSourceFiles(sourcePath, buildDir string, fileNames []string) error {
 	return err
 }
 
-func getDeployEnvs(appId, deploymentId, resultStoreAddress string) []fn.Env {
+func getDeployEnvs(appID, deploymentID, resultStoreAddress string) []fn.Env {
 	envFuncName := "FUNCTION_NAME"
-	envFuncNameValue := deploymentId
+	envFuncNameValue := deploymentID
 
 	envAppName := "APP_NAME"
-	envAppNameValue := appId
+	envAppNameValue := appID
 
 	envResultStore := "RESULT_STORE_ADDRESS"
 	envResultStoreValue := resultStoreAddress

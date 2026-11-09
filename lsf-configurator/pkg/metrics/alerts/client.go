@@ -15,25 +15,25 @@ import (
 )
 
 type alertClient struct {
-	alertApiUrl string
+	alertAPIURL string
 	username    string
 	password    string
-	connectorId string
+	connectorID string
 }
 
-// NewAlertClient returns an AlertClient for the alerting API at alertApiUrl, using basic authentication.
-func NewAlertClient(alertApiUrl, username, password string) core.AlertClient {
+// NewAlertClient returns an AlertClient for the alerting API at alertAPIURL, using basic authentication.
+func NewAlertClient(alertAPIURL, username, password string) core.AlertClient {
 	return &alertClient{
-		alertApiUrl: alertApiUrl,
+		alertAPIURL: alertAPIURL,
 		username:    username,
 		password:    password,
-		connectorId: "",
+		connectorID: "",
 	}
 }
 
 func (c *alertClient) EnsureAlertConnector(ctx context.Context, connectorName, indexName string) (string, error) {
 	// 1Check if connector exists
-	url := fmt.Sprintf("%s/api/actions/connectors", c.alertApiUrl)
+	url := fmt.Sprintf("%s/api/actions/connectors", c.alertAPIURL)
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	req.SetBasicAuth(c.username, c.password)
 	req.Header.Set("kbn-xsrf", "true")
@@ -61,7 +61,7 @@ func (c *alertClient) EnsureAlertConnector(ctx context.Context, connectorName, i
 
 	for _, conn := range connectors {
 		if conn.Name == connectorName {
-			c.connectorId = conn.ID
+			c.connectorID = conn.ID
 			return conn.ID, nil // connector exists
 		}
 	}
@@ -74,7 +74,7 @@ func (c *alertClient) EnsureAlertConnector(ctx context.Context, connectorName, i
 		"secrets": {}
 	}`, connectorName, indexName)
 
-	req, _ = http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/api/actions/connector", c.alertApiUrl), strings.NewReader(body))
+	req, _ = http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/api/actions/connector", c.alertAPIURL), strings.NewReader(body))
 	req.SetBasicAuth(c.username, c.password)
 	req.Header.Set("kbn-xsrf", "true")
 	req.Header.Set("Content-Type", "application/json")
@@ -101,12 +101,12 @@ func (c *alertClient) EnsureAlertConnector(ctx context.Context, connectorName, i
 
 	log.Printf("Index connector %s created with ID %s", connectorName, respJSON.ID)
 
-	c.connectorId = respJSON.ID
+	c.connectorID = respJSON.ID
 	return respJSON.ID, nil
 }
 
 func (c *alertClient) DeleteRule(ctx context.Context, ruleID string) error {
-	delURL := fmt.Sprintf("%s/api/alerting/rule/%s", c.alertApiUrl, ruleID)
+	delURL := fmt.Sprintf("%s/api/alerting/rule/%s", c.alertAPIURL, ruleID)
 	req, err := http.NewRequestWithContext(ctx, "DELETE", delURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create delete request: %w", err)
@@ -170,7 +170,7 @@ func (c *alertClient) CreateOrUpdateRule(ctx context.Context, serviceName string
 		},
 		"actions": []map[string]interface{}{
 			{
-				"id":    c.connectorId,
+				"id":    c.connectorID,
 				"group": "query matched",
 				"params": map[string]interface{}{
 					"documents": []map[string]interface{}{
@@ -193,7 +193,7 @@ func (c *alertClient) CreateOrUpdateRule(ctx context.Context, serviceName string
 	}
 
 	// Create rule with POST
-	url := fmt.Sprintf("%s/api/alerting/rule", c.alertApiUrl)
+	url := fmt.Sprintf("%s/api/alerting/rule", c.alertAPIURL)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		return "", fmt.Errorf("failed to create POST request: %w", err)
@@ -225,7 +225,7 @@ func (c *alertClient) CreateOrUpdateRule(ctx context.Context, serviceName string
 }
 
 func (c *alertClient) FindRuleByServiceName(serviceName string) (string, error) {
-	url := fmt.Sprintf("%s/api/alerting/rules/_find?search=%s&search_fields=name", c.alertApiUrl, url.QueryEscape(uniqueRuleName(serviceName)))
+	url := fmt.Sprintf("%s/api/alerting/rules/_find?search=%s&search_fields=name", c.alertAPIURL, url.QueryEscape(uniqueRuleName(serviceName)))
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {

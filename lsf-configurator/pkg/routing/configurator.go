@@ -19,11 +19,11 @@ type RouteConfigurator struct {
 // LocalRoute is the route target of a component that runs in the same composition.
 const LocalRoute = "local"
 
-// NewRouteConfigurator returns a RoutingClient that writes to the Redis at redisUrl.
-func NewRouteConfigurator(redisUrl string) core.RoutingClient {
+// NewRouteConfigurator returns a RoutingClient that writes to the Redis at redisURL.
+func NewRouteConfigurator(redisURL string) core.RoutingClient {
 	return &RouteConfigurator{
-		RedisUrl: redisUrl,
-		RedisCli: *redis.NewClient(&redis.Options{Addr: redisUrl}),
+		RedisUrl: redisURL,
+		RedisCli: *redis.NewClient(&redis.Options{Addr: redisURL}),
 	}
 }
 
@@ -38,7 +38,7 @@ func (rc *RouteConfigurator) SetRoutingTable(deployment core.Deployment) error {
 			if r.Function == LocalRoute {
 				url = LocalRoute
 			} else {
-				url = getFunctionUrl(r.Function, deployment.Namespace)
+				url = getFunctionURL(r.Function, deployment.Namespace)
 			}
 
 			routeDto := Route{
@@ -64,16 +64,16 @@ func (rc *RouteConfigurator) SetRoutingTable(deployment core.Deployment) error {
 }
 
 // DeleteRoutingTable removes the routing table of a deployment from Redis.
-func (rc *RouteConfigurator) DeleteRoutingTable(deploymentId string) error {
-	err := rc.RedisCli.Del(deploymentId).Err()
+func (rc *RouteConfigurator) DeleteRoutingTable(deploymentID string) error {
+	err := rc.RedisCli.Del(deploymentID).Err()
 	if err != nil {
 		return err
 	}
 
-	log.Printf("Routing table for %s deleted successfully", deploymentId)
+	log.Printf("Routing table for %s deleted successfully", deploymentID)
 	return nil
 }
 
-func getFunctionUrl(fcId, namespace string) string {
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local", fcId, namespace)
+func getFunctionURL(fcID, namespace string) string {
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local", fcID, namespace)
 }

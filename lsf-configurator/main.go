@@ -107,7 +107,7 @@ func main() {
 
 	resultsClient = results.NewRedisResultsClient(conf.RedisUrl)
 
-	s := startHttpServer()
+	s := startHTTPServer()
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -121,7 +121,7 @@ func main() {
 	}
 }
 
-func startHttpServer() *http.Server {
+func startHTTPServer() *http.Server {
 	mux := http.NewServeMux()
 	s := &http.Server{Addr: "0.0.0.0:8080", Handler: api.CorsMiddleware(mux)}
 	registerHandlers(mux)

@@ -4,10 +4,10 @@ import "math"
 
 // layoutCapacity is the arrival rate (req/s) a layout is sized for at the model's target utilization:
 // the minimum over its compositions of the planned replicas times the capacity of one pod
-func (c *latencyController) layoutCapacity(appId string, layout Layout) float64 {
+func (c *latencyController) layoutCapacity(appID string, layout Layout) float64 {
 	capacity := math.Inf(1)
 	for _, ci := range layout {
-		podCapacity := c.podCapacity(appId, ci)
+		podCapacity := c.podCapacity(appID, ci)
 		if podCapacity <= 0 {
 			continue
 		}
@@ -20,9 +20,9 @@ func (c *latencyController) layoutCapacity(appId string, layout Layout) float64 
 
 // componentRuntime is the runtime (ms) of a component in the capacity model: with measured capacity and
 // enough spans in the last metric window the measured average, otherwise the profiled runtime
-func (c *latencyController) componentRuntime(appId string, cp ComponentProfile) float64 {
+func (c *latencyController) componentRuntime(appID string, cp ComponentProfile) float64 {
 	if c.measuredCapacity {
-		if m, ok := c.componentRuntimes[appId][cp.Name]; ok && m.Count >= minimalTraceCount {
+		if m, ok := c.componentRuntimes[appID][cp.Name]; ok && m.Count >= minimalTraceCount {
 			return m.AvgMs
 		}
 	}
@@ -31,10 +31,10 @@ func (c *latencyController) componentRuntime(appId string, cp ComponentProfile) 
 
 // podCapacity is the arrival rate one pod of a composition serves at the model's target utilization:
 // (1000 / t) * C * U, the denominator of the framework's replica formula
-func (c *latencyController) podCapacity(appId string, ci CompositionInfo) float64 {
+func (c *latencyController) podCapacity(appID string, ci CompositionInfo) float64 {
 	runtime := 0.0
 	for _, cp := range ci.ComponentProfiles {
-		runtime += c.componentRuntime(appId, cp)
+		runtime += c.componentRuntime(appID, cp)
 	}
 	if runtime <= 0 {
 		return 0
@@ -48,8 +48,8 @@ func (c *latencyController) podCapacity(appId string, ci CompositionInfo) float6
 
 // podsForRate applies the replica formula R = ceil(rate / podCapacity) to the measured arrival rate:
 // the pods a composition needs right now, at least one and at most its planned replicas
-func (c *latencyController) podsForRate(appId string, ci CompositionInfo, rate float64) int {
-	capacity := c.podCapacity(appId, ci)
+func (c *latencyController) podsForRate(appID string, ci CompositionInfo, rate float64) int {
+	capacity := c.podCapacity(appID, ci)
 	if capacity <= 0 {
 		return ci.RequiredReplicas // no runtime profile: keep the planned replicas
 	}

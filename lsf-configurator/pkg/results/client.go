@@ -16,16 +16,16 @@ type redisResultsClient struct {
 
 const resultsKeyPrefix = "result:"
 
-// NewRedisResultsClient returns a ResultsClient that reads the result:<app id> lists from the Redis at redisUrl.
-func NewRedisResultsClient(redisUrl string) core.ResultsClient {
+// NewRedisResultsClient returns a ResultsClient that reads the result:<app id> lists from the Redis at redisURL.
+func NewRedisResultsClient(redisURL string) core.ResultsClient {
 	return &redisResultsClient{
-		RedisUrl: redisUrl,
-		RedisCli: *redis.NewClient(&redis.Options{Addr: redisUrl}),
+		RedisUrl: redisURL,
+		RedisCli: *redis.NewClient(&redis.Options{Addr: redisURL}),
 	}
 }
 
-func (rc *redisResultsClient) GetAppResults(appId string, count int) ([]core.AppResult, error) {
-	res, err := rc.RedisCli.LRange(resultsKeyPrefix+appId, 0, int64(count-1)).Result()
+func (rc *redisResultsClient) GetAppResults(appID string, count int) ([]core.AppResult, error) {
+	res, err := rc.RedisCli.LRange(resultsKeyPrefix+appID, 0, int64(count-1)).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +35,7 @@ func (rc *redisResultsClient) GetAppResults(appId string, count int) ([]core.App
 	for _, r := range res {
 		var ar core.AppResult
 		if err := json.Unmarshal([]byte(r), &ar); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal redis result for app %s: %w", appId, err)
+			return nil, fmt.Errorf("failed to unmarshal redis result for app %s: %w", appID, err)
 		}
 		results = append(results, ar)
 	}

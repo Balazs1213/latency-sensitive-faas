@@ -33,7 +33,7 @@ func (h *HandlerResults) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HandlerResults) get(w http.ResponseWriter, r *http.Request) {
-	appId := r.PathValue("id")
+	appID := r.PathValue("id")
 	count := r.URL.Query().Get("count")
 	if count == "" {
 		count = "10"
@@ -45,7 +45,7 @@ func (h *HandlerResults) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := h.resultsClient.GetAppResults(appId, countInt)
+	results, err := h.resultsClient.GetAppResults(appID, countInt)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

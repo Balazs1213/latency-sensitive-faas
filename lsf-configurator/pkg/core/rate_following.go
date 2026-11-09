@@ -69,11 +69,11 @@ func (c *latencyController) rateTargets(app *FunctionApp, sizingRate float64) ma
 }
 
 // rateFollowState returns the rate-following state of the app, created on first use
-func (c *latencyController) rateFollowState(appId string) *rateFollow {
-	st := c.rateFollows[appId]
+func (c *latencyController) rateFollowState(appID string) *rateFollow {
+	st := c.rateFollows[appID]
 	if st == nil {
 		st = &rateFollow{pods: make(map[string]int), lastNeeded: make(map[string]time.Time)}
-		c.rateFollows[appId] = st
+		c.rateFollows[appID] = st
 	}
 	return st
 }
@@ -125,11 +125,11 @@ func (c *latencyController) followTarget(app *FunctionApp, st *rateFollow, key s
 }
 
 // setCompositionMinScale sets the min-scale of a layout composition's deployments on one node
-func (c *latencyController) setCompositionMinScale(appId string, ci CompositionInfo, node string, minScale int) {
+func (c *latencyController) setCompositionMinScale(appID string, ci CompositionInfo, node string, minScale int) {
 	// Reload the app: compositions and their deployments are only loaded by GetFunctionApp
-	app, err := c.composer.GetFunctionApp(appId)
+	app, err := c.composer.GetFunctionApp(appID)
 	if err != nil || app == nil {
-		log.Printf("Failed to load app %s for min-scale change: %v", appId, err)
+		log.Printf("Failed to load app %s for min-scale change: %v", appID, err)
 		return
 	}
 	key := compositionKey(ci)
@@ -160,13 +160,13 @@ type ratePoint struct {
 // window, so it describes the moment half a window ago; with the forecast on and a growing rate, it is
 // extrapolated by its growth over the last window to half a window plus one pod startup time ahead.
 // A falling rate is not extrapolated: scaling down is left to the hold time.
-func (c *latencyController) forecastRate(appId string, rate float64, now time.Time) float64 {
+func (c *latencyController) forecastRate(appID string, rate float64, now time.Time) float64 {
 	// Keep the measured rates of the last metric window
-	history := append(c.rateHistory[appId], ratePoint{t: now, rate: rate})
+	history := append(c.rateHistory[appID], ratePoint{t: now, rate: rate})
 	for len(history) > 1 && now.Sub(history[0].t) > c.metricWindow {
 		history = history[1:]
 	}
-	c.rateHistory[appId] = history
+	c.rateHistory[appID] = history
 
 	if !c.rateForecast || len(history) < 2 {
 		return rate

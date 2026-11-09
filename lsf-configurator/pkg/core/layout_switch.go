@@ -72,10 +72,10 @@ func (c *latencyController) handleLayoutChange(app *FunctionApp, path map[string
 	return nextLayoutKey, nil
 }
 
-func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade bool, reuseFunctions bool, standby bool) error {
-	log.Printf("Deploying layout for app %s: %v", appId, layout)
+func (c *latencyController) deployLayout(appID string, layout Layout, isUpgrade bool, reuseFunctions bool, standby bool) error {
+	log.Printf("Deploying layout for app %s: %v", appID, layout)
 
-	app, err := c.composer.GetFunctionApp(appId)
+	app, err := c.composer.GetFunctionApp(appID)
 	if err != nil {
 		return err
 	}
@@ -93,13 +93,13 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 
 	// Standby layout: deployments and routing tables are ready, but the entry point is not switched
 	if standby {
-		logPhase(appId, "standby_ready", "", "", 0)
+		logPhase(appID, "standby_ready", "", "", 0)
 		return nil
 	}
 	if err := c.switchEntryPoint(app, deps.compToDepID); err != nil {
 		return err
 	}
-	c.logReconfigComplete(appId)
+	c.logReconfigComplete(appID)
 
 	// Cleanup: remove the deployments that are neither part of the new layout, nor routed to, nor kept warm
 	keepKeys := c.prewarmKeepKeys(app, fcByKey)
@@ -225,7 +225,7 @@ func (c *latencyController) switchEntryPoint(app *FunctionApp, compToDepID map[s
 
 // ensureDeployment returns the deployment (and its fcId@node key) that serves a layout composition on a node:
 // the existing one when deployments are reused, otherwise a newly created one
-func (c *latencyController) ensureDeployment(appId, node string, ci CompositionInfo, fcByKey map[string]*FunctionComposition,
+func (c *latencyController) ensureDeployment(appID, node string, ci CompositionInfo, fcByKey map[string]*FunctionComposition,
 	activeDepsByKey map[string]*Deployment, isUpgrade, reuseFunctions, standby bool) (string, *Deployment, error) {
 	matchedFc, ok := fcByKey[compositionKey(ci)]
 	if !ok {
@@ -234,11 +234,11 @@ func (c *latencyController) ensureDeployment(appId, node string, ci CompositionI
 	depKey := matchedFc.Id + "@" + node
 	if reuseFunctions {
 		if dep, ok := activeDepsByKey[depKey]; ok {
-			c.reuseDeployment(appId, node, dep, ci, isUpgrade, standby)
+			c.reuseDeployment(appID, node, dep, ci, isUpgrade, standby)
 			return depKey, dep, nil
 		}
 	}
-	dep, err := c.createDeployment(appId, node, matchedFc, ci, isUpgrade, standby)
+	dep, err := c.createDeployment(appID, node, matchedFc, ci, isUpgrade, standby)
 	if err != nil {
 		return "", nil, err
 	}
@@ -249,9 +249,9 @@ func (c *latencyController) ensureDeployment(appId, node string, ci CompositionI
 // min-scale: it is set to the required replicas when it becomes active (upgrade, or any switch with prewarm) and
 // to the standby level for standby layouts. In follow mode an activated layout keeps its pods: they already
 // follow the rate.
-func (c *latencyController) reuseDeployment(appId, node string, dep *Deployment, ci CompositionInfo, isUpgrade, standby bool) {
+func (c *latencyController) reuseDeployment(appID, node string, dep *Deployment, ci CompositionInfo, isUpgrade, standby bool) {
 	log.Printf("Reusing existing deployment %s for node %s", dep.Id, node)
-	logPhase(appId, "deployment_reused", "", dep.Id, 0)
+	logPhase(appID, "deployment_reused", "", dep.Id, 0)
 	followsRate := c.prewarmMode == "follow" && !standby
 	if followsRate || (!isUpgrade && !standby && c.prewarmMode == "off") {
 		return
@@ -270,7 +270,7 @@ func (c *latencyController) reuseDeployment(appId, node string, dep *Deployment,
 
 // createDeployment creates a new deployment of a composition on a node and waits until it is ready. Its routing
 // table is set later, once the ids of all deployments of the layout are known.
-func (c *latencyController) createDeployment(appId, node string, fc *FunctionComposition, ci CompositionInfo, isUpgrade, standby bool) (*Deployment, error) {
+func (c *latencyController) createDeployment(appID, node string, fc *FunctionComposition, ci CompositionInfo, isUpgrade, standby bool) (*Deployment, error) {
 	log.Printf("No existing deployment found for node %s, creating new", node)
 	scale := Scale{
 		MinReplicas:       c.initialMinReplicas(ci, isUpgrade, standby),
@@ -285,12 +285,12 @@ func (c *latencyController) createDeployment(appId, node string, fc *FunctionCom
 	if err != nil {
 		return nil, fmt.Errorf("failed to create deployment for fc %s on node %s: %w", fc.Id, node, err)
 	}
-	logPhase(appId, "deployment_created", "", newDep.Id, 0)
+	logPhase(appID, "deployment_created", "", newDep.Id, 0)
 
 	if r := <-depChan; r.Err != nil {
 		return nil, fmt.Errorf("deployment task failed for fc %s on node %s: %w", fc.Id, node, r.Err)
 	}
-	logPhase(appId, "deployment_ready", "", newDep.Id, 0)
+	logPhase(appID, "deployment_ready", "", newDep.Id, 0)
 
 	fc.Deployments = append(fc.Deployments, newDep) // add to fc's deployments
 	log.Printf("Created new deployment %s for fc %s on node %s", newDep.Id, fc.Id, node)
@@ -345,17 +345,17 @@ func routeTarget(comp string, compToDepID, oldCompToDepID map[string]string) str
 }
 
 // logReconfigComplete logs the end-to-end duration of the app's switch, measured from the decision
-func (c *latencyController) logReconfigComplete(appId string) {
+func (c *latencyController) logReconfigComplete(appID string) {
 	c.lastReconfigsMu.Lock()
 	defer c.lastReconfigsMu.Unlock()
-	startTime, ok := c.reconfigStartTimes[appId]
+	startTime, ok := c.reconfigStartTimes[appID]
 	if !ok {
-		log.Printf("Warning: Missing start time for app %s in reconfigStartTime map.", appId)
+		log.Printf("Warning: Missing start time for app %s in reconfigStartTime map.", appID)
 		return
 	}
 	event := ReconfigEvent{
 		EventType:  "RECONFIG_COMPLETE",
-		AppID:      appId,
+		AppID:      appID,
 		EventTime:  startTime.UnixMilli(),
 		DurationMs: float64(time.Since(startTime)) / float64(time.Millisecond),
 	}
@@ -365,7 +365,7 @@ func (c *latencyController) logReconfigComplete(appId string) {
 	} else {
 		log.Printf("[RECONFIG_EVENT] %s", string(jsonBytes))
 	}
-	delete(c.reconfigStartTimes, appId)
+	delete(c.reconfigStartTimes, appID)
 }
 
 // prewarmKeepKeys returns the deployments (fcId@node) to keep after a switch: with prewarm every deployment
@@ -400,7 +400,7 @@ func (c *latencyController) removeUnusedDeployments(app *FunctionApp, keep func(
 }
 
 // deleteDeployment deletes an old deployment of a composition and reports whether it is gone
-func (c *latencyController) deleteDeployment(appId string, fc *FunctionComposition, d *Deployment) bool {
+func (c *latencyController) deleteDeployment(appID string, fc *FunctionComposition, d *Deployment) bool {
 	log.Printf("Deleting old deployment %s (fc %s on node %s)", d.Id, fc.Id, d.Node)
 	delChan, err := c.composer.DeleteFcDeployment(d.Id)
 	if err != nil {
@@ -412,13 +412,13 @@ func (c *latencyController) deleteDeployment(appId string, fc *FunctionCompositi
 		return false
 	}
 	log.Printf("Deleted deployment %s", d.Id)
-	logPhase(appId, "old_deleted", "", d.Id, 0)
+	logPhase(appID, "old_deleted", "", d.Id, 0)
 	return true
 }
 
-func getFunctionComposition(app *FunctionApp, fcId string) *FunctionComposition {
+func getFunctionComposition(app *FunctionApp, fcID string) *FunctionComposition {
 	for _, fc := range app.Compositions {
-		if fc.Id == fcId {
+		if fc.Id == fcID {
 			return fc
 		}
 	}
@@ -436,13 +436,13 @@ func componentsKey(comps []string) string {
 
 // logPhase writes one machine-readable line per reconfiguration phase.
 // The lines are used to split a layout switch into detection and execution time.
-func logPhase(appId, phase, layout, deploymentId string, value float64) {
+func logPhase(appID, phase, layout, deploymentID string, value float64) {
 	event := map[string]interface{}{
-		"app_id":        appId,
+		"app_id":        appID,
 		"phase":         phase,
 		"t_ms":          time.Now().UnixMilli(),
 		"layout":        layout,
-		"deployment_id": deploymentId,
+		"deployment_id": deploymentID,
 		"value":         value,
 	}
 	if b, err := json.Marshal(event); err == nil {
@@ -451,9 +451,9 @@ func logPhase(appId, phase, layout, deploymentId string, value float64) {
 }
 
 // removeInactiveDeployments deletes every deployment of the app that is not part of its active layout
-func (c *latencyController) removeInactiveDeployments(appId string) {
+func (c *latencyController) removeInactiveDeployments(appID string) {
 	// Reload the app: compositions and their deployments are only loaded by GetFunctionApp
-	app, err := c.composer.GetFunctionApp(appId)
+	app, err := c.composer.GetFunctionApp(appID)
 	if err != nil || app == nil {
 		return
 	}

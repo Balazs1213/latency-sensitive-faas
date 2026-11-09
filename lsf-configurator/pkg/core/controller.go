@@ -166,9 +166,9 @@ func (c *latencyController) tick() {
 	c.logRuntimes(runtimes)
 
 	handledApps := make(map[string]bool)
-	for appId, runtime := range runtimes {
-		handledApps[appId] = true
-		c.controlApp(appId, runtime, traceCounts[appId])
+	for appID, runtime := range runtimes {
+		handledApps[appID] = true
+		c.controlApp(appID, runtime, traceCounts[appID])
 	}
 
 	// Handle apps with no reported runtimes (possible downgrade)
@@ -185,14 +185,14 @@ func (c *latencyController) tick() {
 }
 
 // controlApp decides on the reconfiguration of an app with traffic in the metric window
-func (c *latencyController) controlApp(appId string, runtime float64, traceCount int) {
-	app, err := c.composer.GetFunctionApp(appId)
+func (c *latencyController) controlApp(appID string, runtime float64, traceCount int) {
+	app, err := c.composer.GetFunctionApp(appID)
 	if err != nil {
-		log.Printf("Error retrieving function app %s: %v", appId, err)
+		log.Printf("Error retrieving function app %s: %v", appID, err)
 		return
 	}
 	if app == nil {
-		log.Printf("Found traces for app %s, but app is not registered in the database. Skipping", appId)
+		log.Printf("Found traces for app %s, but app is not registered in the database. Skipping", appID)
 		return
 	}
 	if app.LatencyLimit <= 0 {
@@ -364,34 +364,34 @@ func (c *latencyController) initLayouts() {
 }
 
 // inCooldown reports whether the app was reconfigured less than the cooldown period ago
-func (c *latencyController) inCooldown(appId string) bool {
+func (c *latencyController) inCooldown(appID string) bool {
 	c.lastReconfigsMu.Lock()
 	defer c.lastReconfigsMu.Unlock()
-	last, ok := c.lastReconfigs[appId]
+	last, ok := c.lastReconfigs[appID]
 	return ok && time.Since(last) < c.cooldownPeriod
 }
 
 // markReconfigured starts the cooldown period of the app
-func (c *latencyController) markReconfigured(appId string) {
+func (c *latencyController) markReconfigured(appID string) {
 	c.lastReconfigsMu.Lock()
 	defer c.lastReconfigsMu.Unlock()
-	c.lastReconfigs[appId] = time.Now()
+	c.lastReconfigs[appID] = time.Now()
 }
 
 // resetDowngradeCount clears the app's count of consecutive downgrade-eligible ticks
-func (c *latencyController) resetDowngradeCount(appId string) {
+func (c *latencyController) resetDowngradeCount(appID string) {
 	c.lastReconfigsMu.Lock()
 	defer c.lastReconfigsMu.Unlock()
-	c.consecutiveDowngradeEligible[appId] = 0
+	c.consecutiveDowngradeEligible[appID] = 0
 }
 
 // addDowngradeCount raises the app's count of consecutive downgrade-eligible ticks by step
 // and returns the new count
-func (c *latencyController) addDowngradeCount(appId string, step int) int {
+func (c *latencyController) addDowngradeCount(appID string, step int) int {
 	c.lastReconfigsMu.Lock()
 	defer c.lastReconfigsMu.Unlock()
-	c.consecutiveDowngradeEligible[appId] += step
-	return c.consecutiveDowngradeEligible[appId]
+	c.consecutiveDowngradeEligible[appID] += step
+	return c.consecutiveDowngradeEligible[appID]
 }
 
 // arrivalRate converts a trace count of the metric window to an arrival rate (req/s)
@@ -476,14 +476,14 @@ func sortedLayoutKeys(app *FunctionApp) []string {
 }
 
 // deployInitialLayout deploys the active layout of a newly registered app, then its standby layouts (prewarm)
-func (c *latencyController) deployInitialLayout(appId string, layout Layout) {
-	if err := c.deployLayout(appId, layout, false, reuseDeployments, false); err != nil {
-		log.Printf("Error deploying layout for app %s: %v", appId, err)
+func (c *latencyController) deployInitialLayout(appID string, layout Layout) {
+	if err := c.deployLayout(appID, layout, false, reuseDeployments, false); err != nil {
+		log.Printf("Error deploying layout for app %s: %v", appID, err)
 		return
 	}
-	log.Printf("Successfully deployed function app with layout %s: %v", appId, layout)
+	log.Printf("Successfully deployed function app with layout %s: %v", appID, layout)
 	// Prewarm: deploy the other layout candidates once the initial layout is up
-	if fresh, err := c.composer.GetFunctionApp(appId); err == nil && fresh != nil {
+	if fresh, err := c.composer.GetFunctionApp(appID); err == nil && fresh != nil {
 		c.ensureStandbyLayouts(fresh)
 	}
 }

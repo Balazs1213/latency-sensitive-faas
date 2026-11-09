@@ -112,17 +112,17 @@ func (c *slambucCalculator) runSLAMBUC(scenario core.LayoutScenario) (map[string
 	})
 
 	for _, l := range scenario.Links {
-		fromId, ok := idMap[l.From]
+		fromID, ok := idMap[l.From]
 		if !ok {
 			continue
 		}
-		toId, ok := idMap[l.To]
+		toID, ok := idMap[l.To]
 		if !ok {
 			continue
 		}
 		edges = append(edges, map[string]interface{}{
-			"from": fromId,
-			"to":   toId,
+			"from": fromID,
+			"to":   toID,
 			"attr": map[string]interface{}{
 				"rate": l.InvocationRate,
 				"data": l.DataDelay,

@@ -15,14 +15,14 @@ import (
 // services.
 type KnClient interface {
 	Init(ctx context.Context, fc FunctionComposition, runtime, sourcePath string) (string, error)
-	Deploy(ctx context.Context, deployment Deployment, image, appId string) error
+	Deploy(ctx context.Context, deployment Deployment, image, appID string) error
 	Delete(ctx context.Context, deployment Deployment) error
 }
 
 // RoutingClient stores and deletes the routing tables of deployments in the routing-table store.
 type RoutingClient interface {
 	SetRoutingTable(deployment Deployment) error
-	DeleteRoutingTable(deploymentId string) error
+	DeleteRoutingTable(deploymentID string) error
 }
 
 // Builder builds the image of a function composition; NotifyBuildFinished is called when a build has finished.
@@ -76,7 +76,7 @@ type ScenarioManager interface {
 
 // ResultsClient reads the latest results of an app from the result store.
 type ResultsClient interface {
-	GetAppResults(appId string, count int) ([]AppResult, error)
+	GetAppResults(appID string, count int) ([]AppResult, error)
 }
 
 // DNSClient manages the DNS record of an app's entry point, which points to the deployment receiving the app's
