@@ -116,85 +116,8 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 	for node, compositionInfo := range layout {
 		// process each node+components in parallel
 		go func(node string, compositionInfo CompositionInfo) {
-			components := compositionInfo.ComponentProfiles
-
-			componentNames := make([]string, len(components))
-			for i, cp := range components {
-				componentNames[i] = cp.Name
-			}
-			fcKey := componentsKey(componentNames)
-			matchedFc, ok := fcByKey[fcKey]
-			if !ok {
-				resultChan <- depResult{"", nil, fmt.Errorf("no matching function composition for components: %v", components)}
-				return
-			}
-
-			depKey := matchedFc.Id + "@" + node
-			if reuseFunctions {
-				if dep, ok := activeDepsByKey[depKey]; ok {
-					// if a deployment already exists for this fc+node, reuse it
-					log.Printf("Reusing existing deployment %s for node %s", dep.Id, node)
-					logPhase(appId, "deployment_reused", "", dep.Id, 0)
-					// A reused deployment keeps its old min-scale: set it to the required replicas when it becomes
-					// active (upgrade, or any switch with prewarm) and to the standby level for standby layouts.
-					// In follow mode an activated layout keeps its pods: they already follow the rate.
-					followsRate := c.prewarmMode == "follow" && !standby
-					if !followsRate && (isUpgrade || standby || c.prewarmMode != "off") {
-						minScale := compositionInfo.RequiredReplicas
-						if standby && c.prewarmMode != "full" {
-							minScale = 1
-						}
-						// Run in the background: the min-scale does not affect routing, so it must not delay the switch
-						go func(d *Deployment, n int) {
-							if err := c.composer.SetDeploymentMinScale(d, n); err != nil {
-								log.Printf("Failed to set min-scale of reused deployment %s: %v", d.Id, err)
-							}
-						}(dep, minScale)
-					}
-					resultChan <- depResult{depKey, dep, nil}
-					return
-				}
-			}
-
-			// otherwise, create a new deployment, routing table will be set later once all deployments ids are known
-			log.Printf("No existing deployment found for node %s, creating new", node)
-
-			emptyRT := make(RoutingTable)
-			minReplicas := 1
-			// All required replicas warm: on upgrades, for "full" standby layouts, and (with prewarm)
-			// for the active layout, so it runs at the capacity the model planned for
-			if isUpgrade || (standby && c.prewarmMode == "full") || (!standby && c.prewarmMode != "off") {
-				minReplicas = compositionInfo.RequiredReplicas
-			}
-
-			scale := Scale{
-				MinReplicas:       minReplicas,
-				MaxReplicas:       compositionInfo.RequiredReplicas,
-				TargetConcurrency: compositionInfo.TargetConcurrency,
-			}
-			resources := Resources{
-				Memory: compositionInfo.Memory,
-				CPU:    compositionInfo.MCPU,
-			}
-			newDep, depChan, err := c.composer.CreateFcDeployment(matchedFc.Id, c.deployNamespace, node, emptyRT, scale, resources)
-			if err != nil {
-				resultChan <- depResult{"", nil, fmt.Errorf("failed to create deployment for fc %s on node %s: %w", matchedFc.Id, node, err)}
-				return
-			}
-
-			logPhase(appId, "deployment_created", "", newDep.Id, 0)
-
-			r := <-depChan
-			if r.Err != nil {
-				resultChan <- depResult{"", nil, fmt.Errorf("deployment task failed for fc %s on node %s: %w", matchedFc.Id, node, r.Err)}
-				return
-			}
-
-			logPhase(appId, "deployment_ready", "", newDep.Id, 0)
-
-			matchedFc.Deployments = append(matchedFc.Deployments, newDep) // add to fc's deployments
-			log.Printf("Created new deployment %s for fc %s on node %s", newDep.Id, matchedFc.Id, node)
-			resultChan <- depResult{depKey, newDep, nil}
+			key, dep, err := c.ensureDeployment(appId, node, compositionInfo, fcByKey, activeDepsByKey, isUpgrade, reuseFunctions, standby)
+			resultChan <- depResult{key, dep, err}
 		}(node, compositionInfo)
 	}
 
@@ -262,6 +185,90 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 	})
 
 	return nil
+}
+
+// ensureDeployment returns the deployment (and its fcId@node key) that serves a layout composition on a node:
+// the existing one when deployments are reused, otherwise a newly created one
+func (c *latencyController) ensureDeployment(appId, node string, ci CompositionInfo, fcByKey map[string]*FunctionComposition,
+	activeDepsByKey map[string]*Deployment, isUpgrade, reuseFunctions, standby bool) (string, *Deployment, error) {
+	matchedFc, ok := fcByKey[compositionKey(ci)]
+	if !ok {
+		return "", nil, fmt.Errorf("no matching function composition for components: %v", ci.ComponentProfiles)
+	}
+	depKey := matchedFc.Id + "@" + node
+	if reuseFunctions {
+		if dep, ok := activeDepsByKey[depKey]; ok {
+			c.reuseDeployment(appId, node, dep, ci, isUpgrade, standby)
+			return depKey, dep, nil
+		}
+	}
+	dep, err := c.createDeployment(appId, node, matchedFc, ci, isUpgrade, standby)
+	if err != nil {
+		return "", nil, err
+	}
+	return depKey, dep, nil
+}
+
+// reuseDeployment reuses the existing deployment of a composition on a node. A reused deployment keeps its old
+// min-scale: it is set to the required replicas when it becomes active (upgrade, or any switch with prewarm) and
+// to the standby level for standby layouts. In follow mode an activated layout keeps its pods: they already
+// follow the rate.
+func (c *latencyController) reuseDeployment(appId, node string, dep *Deployment, ci CompositionInfo, isUpgrade, standby bool) {
+	log.Printf("Reusing existing deployment %s for node %s", dep.Id, node)
+	logPhase(appId, "deployment_reused", "", dep.Id, 0)
+	followsRate := c.prewarmMode == "follow" && !standby
+	if followsRate || !(isUpgrade || standby || c.prewarmMode != "off") {
+		return
+	}
+	minScale := ci.RequiredReplicas
+	if standby && c.prewarmMode != "full" {
+		minScale = 1
+	}
+	// Run in the background: the min-scale does not affect routing, so it must not delay the switch
+	go func() {
+		if err := c.composer.SetDeploymentMinScale(dep, minScale); err != nil {
+			log.Printf("Failed to set min-scale of reused deployment %s: %v", dep.Id, err)
+		}
+	}()
+}
+
+// createDeployment creates a new deployment of a composition on a node and waits until it is ready. Its routing
+// table is set later, once the ids of all deployments of the layout are known.
+func (c *latencyController) createDeployment(appId, node string, fc *FunctionComposition, ci CompositionInfo, isUpgrade, standby bool) (*Deployment, error) {
+	log.Printf("No existing deployment found for node %s, creating new", node)
+	scale := Scale{
+		MinReplicas:       c.initialMinReplicas(ci, isUpgrade, standby),
+		MaxReplicas:       ci.RequiredReplicas,
+		TargetConcurrency: ci.TargetConcurrency,
+	}
+	resources := Resources{
+		Memory: ci.Memory,
+		CPU:    ci.MCPU,
+	}
+	newDep, depChan, err := c.composer.CreateFcDeployment(fc.Id, c.deployNamespace, node, make(RoutingTable), scale, resources)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create deployment for fc %s on node %s: %w", fc.Id, node, err)
+	}
+	logPhase(appId, "deployment_created", "", newDep.Id, 0)
+
+	if r := <-depChan; r.Err != nil {
+		return nil, fmt.Errorf("deployment task failed for fc %s on node %s: %w", fc.Id, node, r.Err)
+	}
+	logPhase(appId, "deployment_ready", "", newDep.Id, 0)
+
+	fc.Deployments = append(fc.Deployments, newDep) // add to fc's deployments
+	log.Printf("Created new deployment %s for fc %s on node %s", newDep.Id, fc.Id, node)
+	return newDep, nil
+}
+
+// initialMinReplicas is the min-scale of a new deployment: all required replicas warm on upgrades, for "full"
+// standby layouts and (with prewarm) for the active layout, so that it runs at the capacity the model planned
+// for; one pod otherwise
+func (c *latencyController) initialMinReplicas(ci CompositionInfo, isUpgrade, standby bool) int {
+	if isUpgrade || (standby && c.prewarmMode == "full") || (!standby && c.prewarmMode != "off") {
+		return ci.RequiredReplicas
+	}
+	return 1
 }
 
 // routingTable builds the routing table of a deployment: for every link of its components the deployment that
