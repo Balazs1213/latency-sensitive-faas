@@ -113,10 +113,6 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 
 	resultChan := make(chan depResult, len(layout))
 
-	compRuntimeMap := make(map[string]int) // component -> runtime in ms
-	for _, comp := range app.Components {
-		compRuntimeMap[comp.Name] = comp.Runtime
-	}
 	for node, compositionInfo := range layout {
 		// process each node+components in parallel
 		go func(node string, compositionInfo CompositionInfo) {
@@ -296,80 +292,87 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 	log.Printf("Updated DNS record for app %s to deployment %s (first component: %s)", app.Id, firstDepID, firstComponent)
 	logPhase(appId, "dns_updated", "", firstDepID, 0)
 
-	// Measure and log reconfiguration end-to-end latency
-	c.lastReconfigsMu.Lock()
-	startTime, ok := c.reconfigStartTimes[appId]
-	if ok {
-		duration := time.Since(startTime)
-		durationMs := float64(duration) / float64(time.Millisecond)
-		event := ReconfigEvent{
-			EventType:  "RECONFIG_COMPLETE",
-			AppID:      appId,
-			EventTime:  startTime.UnixMilli(),
-			DurationMs: durationMs,
-		}
+	c.logReconfigComplete(appId)
 
-		jsonBytes, err := json.Marshal(event)
-		if err != nil {
-			log.Printf("Error marshalling reconfig event: %v", err)
-		} else {
-			log.Printf("[RECONFIG_EVENT] %s", string(jsonBytes))
-		}
-
-		delete(c.reconfigStartTimes, appId)
-	} else {
-		log.Printf("Warning: Missing start time for app %s in reconfigStartTime map.", appId)
-	}
-	c.lastReconfigsMu.Unlock()
-
-	// With prewarm, keep every deployment that belongs to any layout candidate (fc@node), so the
-	// previously active layout stays warm for the next switch
-	keepKeys := make(map[string]bool)
-	if c.prewarmMode != "off" {
-		for _, candidate := range app.LayoutCandidates {
-			for node, ci := range candidate {
-				names := make([]string, len(ci.ComponentProfiles))
-				for i, cp := range ci.ComponentProfiles {
-					names[i] = cp.Name
-				}
-				if fc, ok := fcByKey[componentsKey(names)]; ok {
-					keepKeys[fc.Id+"@"+node] = true
-				}
-			}
-		}
-	}
-
-	// cleanup: remove unused deployments asynchronously
-	go func() {
-		time.Sleep(10 * time.Second)
-		for _, fc := range app.Compositions {
-			var kept []*Deployment
-			for _, d := range fc.Deployments {
-				if activeDepIDs[d.Id] || referencedDepIDs[d.Id] || keepKeys[fc.Id+"@"+d.Node] {
-					kept = append(kept, d)
-					continue
-				}
-				log.Printf("Deleting old deployment %s (fc %s on node %s)", d.Id, fc.Id, d.Node)
-				delChan, err := c.composer.DeleteFcDeployment(d.Id)
-				if err != nil {
-					log.Printf("Failed to delete deployment %s: %v", d.Id, err)
-					kept = append(kept, d)
-					continue
-				}
-				r := <-delChan
-				if r.Err != nil {
-					log.Printf("Failed to delete deployment %s: %v", d.Id, r.Err)
-					kept = append(kept, d)
-				} else {
-					log.Printf("Deleted deployment %s", d.Id)
-					logPhase(appId, "old_deleted", "", d.Id, 0)
-				}
-			}
-			fc.Deployments = kept
-		}
-	}()
+	// Cleanup: remove the deployments that are neither part of the new layout, nor routed to, nor kept warm
+	keepKeys := c.prewarmKeepKeys(app, fcByKey)
+	go c.removeUnusedDeployments(app, func(fc *FunctionComposition, d *Deployment) bool {
+		return activeDepIDs[d.Id] || referencedDepIDs[d.Id] || keepKeys[fc.Id+"@"+d.Node]
+	})
 
 	return nil
+}
+
+// logReconfigComplete logs the end-to-end duration of the app's switch, measured from the decision
+func (c *latencyController) logReconfigComplete(appId string) {
+	c.lastReconfigsMu.Lock()
+	defer c.lastReconfigsMu.Unlock()
+	startTime, ok := c.reconfigStartTimes[appId]
+	if !ok {
+		log.Printf("Warning: Missing start time for app %s in reconfigStartTime map.", appId)
+		return
+	}
+	event := ReconfigEvent{
+		EventType:  "RECONFIG_COMPLETE",
+		AppID:      appId,
+		EventTime:  startTime.UnixMilli(),
+		DurationMs: float64(time.Since(startTime)) / float64(time.Millisecond),
+	}
+	jsonBytes, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("Error marshalling reconfig event: %v", err)
+	} else {
+		log.Printf("[RECONFIG_EVENT] %s", string(jsonBytes))
+	}
+	delete(c.reconfigStartTimes, appId)
+}
+
+// prewarmKeepKeys returns the deployments (fcId@node) to keep after a switch: with prewarm every deployment
+// of any layout candidate, so that the previously active layout stays warm for the next switch
+func (c *latencyController) prewarmKeepKeys(app *FunctionApp, fcByKey map[string]*FunctionComposition) map[string]bool {
+	keepKeys := make(map[string]bool)
+	if c.prewarmMode == "off" {
+		return keepKeys
+	}
+	for _, candidate := range app.LayoutCandidates {
+		for node, ci := range candidate {
+			if fc, ok := fcByKey[compositionKey(ci)]; ok {
+				keepKeys[fc.Id+"@"+node] = true
+			}
+		}
+	}
+	return keepKeys
+}
+
+// removeUnusedDeployments deletes, after a grace period, every deployment of the app that keep does not keep
+func (c *latencyController) removeUnusedDeployments(app *FunctionApp, keep func(*FunctionComposition, *Deployment) bool) {
+	time.Sleep(10 * time.Second)
+	for _, fc := range app.Compositions {
+		var kept []*Deployment
+		for _, d := range fc.Deployments {
+			if keep(fc, d) || !c.deleteDeployment(app.Id, fc, d) {
+				kept = append(kept, d)
+			}
+		}
+		fc.Deployments = kept
+	}
+}
+
+// deleteDeployment deletes an old deployment of a composition and reports whether it is gone
+func (c *latencyController) deleteDeployment(appId string, fc *FunctionComposition, d *Deployment) bool {
+	log.Printf("Deleting old deployment %s (fc %s on node %s)", d.Id, fc.Id, d.Node)
+	delChan, err := c.composer.DeleteFcDeployment(d.Id)
+	if err != nil {
+		log.Printf("Failed to delete deployment %s: %v", d.Id, err)
+		return false
+	}
+	if r := <-delChan; r.Err != nil {
+		log.Printf("Failed to delete deployment %s: %v", d.Id, r.Err)
+		return false
+	}
+	log.Printf("Deleted deployment %s", d.Id)
+	logPhase(appId, "old_deleted", "", d.Id, 0)
+	return true
 }
 
 func getFunctionComposition(app *FunctionApp, fcId string) *FunctionComposition {
