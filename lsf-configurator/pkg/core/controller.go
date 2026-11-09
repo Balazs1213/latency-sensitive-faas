@@ -420,9 +420,40 @@ func (c *latencyController) RegisterFunctionApp(creationData FunctionAppCreation
 		return nil, err
 	}
 
-	createdCompositionKeys := make(map[string]bool)
+	if err := c.createCompositions(app); err != nil {
+		return nil, err
+	}
+	go c.deployInitialLayout(app.Id, app.LayoutCandidates[app.ActiveLayoutKey])
 
-	// Sort layout candidate keys, putting LayoutKeyMin first, so it gets built first
+	return app, nil
+}
+
+// createCompositions creates the function composition of every layout candidate once, starting with the
+// active layout's, so that its build starts first
+func (c *latencyController) createCompositions(app *FunctionApp) error {
+	created := make(map[string]bool)
+	for _, key := range sortedLayoutKeys(app) {
+		for _, compositionInfo := range app.LayoutCandidates[key] {
+			componentNames := make([]string, len(compositionInfo.ComponentProfiles))
+			for i, cp := range compositionInfo.ComponentProfiles {
+				componentNames[i] = cp.Name
+			}
+			fcKey := componentsKey(componentNames)
+			if created[fcKey] {
+				continue
+			}
+			if _, err := c.composer.AddFunctionComposition(app.Id, componentNames, ""); err != nil {
+				log.Printf("Error adding function composition for app %s: %v", app.Id, err)
+				return err
+			}
+			created[fcKey] = true
+		}
+	}
+	return nil
+}
+
+// sortedLayoutKeys returns the layout candidate keys of the app, the active layout first, the rest in key order
+func sortedLayoutKeys(app *FunctionApp) []string {
 	var keys []string
 	for k := range app.LayoutCandidates {
 		keys = append(keys, k)
@@ -436,41 +467,18 @@ func (c *latencyController) RegisterFunctionApp(creationData FunctionAppCreation
 		}
 		return keys[i] < keys[j]
 	})
+	return keys
+}
 
-	for _, key := range keys {
-		layout := app.LayoutCandidates[key]
-		for _, compositionInfo := range layout {
-			components := compositionInfo.ComponentProfiles
-
-			componentNames := make([]string, len(components))
-			for i, cp := range components {
-				componentNames[i] = cp.Name
-			}
-			fcKey := componentsKey(componentNames)
-			if createdCompositionKeys[fcKey] {
-				continue
-			}
-			_, err := c.composer.AddFunctionComposition(app.Id, componentNames, "")
-			if err != nil {
-				log.Printf("Error adding function composition for app %s: %v", app.Id, err)
-				return nil, err
-			}
-			createdCompositionKeys[fcKey] = true
-		}
+// deployInitialLayout deploys the active layout of a newly registered app, then its standby layouts (prewarm)
+func (c *latencyController) deployInitialLayout(appId string, layout Layout) {
+	if err := c.deployLayout(appId, layout, false, reuseDeployments, false); err != nil {
+		log.Printf("Error deploying layout for app %s: %v", appId, err)
+		return
 	}
-
-	go func(appId string, layout Layout) {
-		err = c.deployLayout(appId, layout, false, reuseDeployments, false)
-		if err != nil {
-			log.Printf("Error deploying layout for app %s: %v", appId, err)
-			return
-		}
-		log.Printf("Successfully deployed function app with layout %s: %v", appId, layout)
-		// Prewarm: deploy the other layout candidates once the initial layout is up
-		if fresh, err := c.composer.GetFunctionApp(appId); err == nil && fresh != nil {
-			c.ensureStandbyLayouts(fresh)
-		}
-	}(app.Id, app.LayoutCandidates[app.ActiveLayoutKey])
-
-	return app, nil
+	log.Printf("Successfully deployed function app with layout %s: %v", appId, layout)
+	// Prewarm: deploy the other layout candidates once the initial layout is up
+	if fresh, err := c.composer.GetFunctionApp(appId); err == nil && fresh != nil {
+		c.ensureStandbyLayouts(fresh)
+	}
 }
