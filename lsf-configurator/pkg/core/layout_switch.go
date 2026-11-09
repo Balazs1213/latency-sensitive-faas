@@ -77,85 +77,16 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 	if err != nil {
 		return err
 	}
+	fcByKey := compositionsByKey(app)
+	oldDepsByKey, oldCompToDepID := indexDeployments(app)
 
-	// Build a fast lookup: compositionKey -> FunctionComposition
-	fcByKey := make(map[string]*FunctionComposition)
-	for _, fc := range app.Compositions {
-		fcByKey[componentsKey(fc.Components)] = fc
+	deps, err := c.deployCompositions(app, layout, fcByKey, oldDepsByKey, isUpgrade, reuseFunctions, standby)
+	if err != nil {
+		return err
 	}
-
-	// Build a map of currently active deployments keyed by fcId@node
-	// We are going to modify this map as we reuse/create deployments
-	activeDepsByKey := make(map[string]*Deployment)
-	oldCompToDepID := make(map[string]string) // component -> deployment id mapping from old layout, used as fallback
-	for _, fc := range app.Compositions {
-		for _, d := range fc.Deployments {
-			k := fc.Id + "@" + d.Node
-			activeDepsByKey[k] = d
-			for _, comp := range fc.Components {
-				// Snapshot old component -> deployment id mapping (fallback)
-				if _, ok := oldCompToDepID[comp]; !ok {
-					oldCompToDepID[comp] = d.Id
-				}
-			}
-		}
-	}
-
-	// single-pass creation/reuse and build comp -> dep mapping
-	activeDepIDs := make(map[string]bool)  // set of active dep ids
-	compToDepID := make(map[string]string) // component -> deployment id
-
-	type depResult struct {
-		key string
-		dep *Deployment
-		err error
-	}
-
-	resultChan := make(chan depResult, len(layout))
-
-	for node, compositionInfo := range layout {
-		// process each node+components in parallel
-		go func(node string, compositionInfo CompositionInfo) {
-			key, dep, err := c.ensureDeployment(appId, node, compositionInfo, fcByKey, activeDepsByKey, isUpgrade, reuseFunctions, standby)
-			resultChan <- depResult{key, dep, err}
-		}(node, compositionInfo)
-	}
-
-	// collect results and update the active deployment mapping
-	for i := 0; i < len(layout); i++ {
-		res := <-resultChan
-		if res.err != nil {
-			return res.err
-		}
-		activeDepsByKey[res.key] = res.dep
-		activeDepIDs[res.dep.Id] = true
-		fc := getFunctionComposition(app, res.dep.FunctionCompositionId)
-		if fc == nil {
-			panic(fmt.Sprintf("unexpected error: missing function composition %s for deployment %s", res.dep.FunctionCompositionId, res.dep.Id))
-		}
-		for _, comp := range fc.Components {
-			compToDepID[comp] = res.dep.Id
-		}
-	}
-
-	// build and apply routing tables
-	referencedDepIDs := make(map[string]bool)
-	for node, compositionInfo := range layout {
-		componentNames := profileNames(compositionInfo)
-		matchedFc := fcByKey[componentsKey(componentNames)]
-		depKey := matchedFc.Id + "@" + node
-		dep := activeDepsByKey[depKey]
-
-		if dep == nil {
-			panic(fmt.Sprintf("unexpected error: missing deployment for key %s", depKey))
-		}
-
-		rt := routingTable(app, dep.Id, componentNames, compToDepID, oldCompToDepID, referencedDepIDs)
-		err = c.composer.SetRoutingTable(dep.Id, rt)
-		if err != nil {
-			return fmt.Errorf("failed to set routing table for deployment %s: %w", dep.Id, err)
-		}
-		log.Printf("Set routing table for deployment %s: %v", dep.Id, rt)
+	referencedDepIDs, err := c.applyRoutingTables(app, layout, fcByKey, deps, oldCompToDepID)
+	if err != nil {
+		return err
 	}
 
 	// Standby layout: deployments and routing tables are ready, but the entry point is not switched
@@ -163,7 +94,119 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 		logPhase(appId, "standby_ready", "", "", 0)
 		return nil
 	}
+	if err := c.switchEntryPoint(app, deps.compToDepID); err != nil {
+		return err
+	}
+	c.logReconfigComplete(appId)
 
+	// Cleanup: remove the deployments that are neither part of the new layout, nor routed to, nor kept warm
+	keepKeys := c.prewarmKeepKeys(app, fcByKey)
+	go c.removeUnusedDeployments(app, func(fc *FunctionComposition, d *Deployment) bool {
+		return deps.ids[d.Id] || referencedDepIDs[d.Id] || keepKeys[fc.Id+"@"+d.Node]
+	})
+
+	return nil
+}
+
+// layoutDeployments are the deployments that serve a layout
+type layoutDeployments struct {
+	byKey       map[string]*Deployment // fcId@node -> deployment
+	ids         map[string]bool        // ids of the deployments
+	compToDepID map[string]string      // component -> id of the deployment that serves it
+}
+
+// compositionsByKey indexes the function compositions of the app by their components key
+func compositionsByKey(app *FunctionApp) map[string]*FunctionComposition {
+	fcByKey := make(map[string]*FunctionComposition)
+	for _, fc := range app.Compositions {
+		fcByKey[componentsKey(fc.Components)] = fc
+	}
+	return fcByKey
+}
+
+// indexDeployments indexes the current deployments of the app by fcId@node and maps every component to a
+// deployment that serves it: the fallback route for a component that the new layout does not serve
+func indexDeployments(app *FunctionApp) (map[string]*Deployment, map[string]string) {
+	depsByKey := make(map[string]*Deployment)
+	compToDepID := make(map[string]string)
+	for _, fc := range app.Compositions {
+		for _, d := range fc.Deployments {
+			depsByKey[fc.Id+"@"+d.Node] = d
+			for _, comp := range fc.Components {
+				if _, ok := compToDepID[comp]; !ok {
+					compToDepID[comp] = d.Id
+				}
+			}
+		}
+	}
+	return depsByKey, compToDepID
+}
+
+// deployCompositions reuses or creates the deployment of every composition of the layout, the compositions in
+// parallel, and collects the deployments
+func (c *latencyController) deployCompositions(app *FunctionApp, layout Layout, fcByKey map[string]*FunctionComposition,
+	oldDepsByKey map[string]*Deployment, isUpgrade, reuseFunctions, standby bool) (layoutDeployments, error) {
+	type depResult struct {
+		key string
+		dep *Deployment
+		err error
+	}
+	resultChan := make(chan depResult, len(layout))
+	for node, compositionInfo := range layout {
+		go func(node string, compositionInfo CompositionInfo) {
+			key, dep, err := c.ensureDeployment(app.Id, node, compositionInfo, fcByKey, oldDepsByKey, isUpgrade, reuseFunctions, standby)
+			resultChan <- depResult{key, dep, err}
+		}(node, compositionInfo)
+	}
+
+	deps := layoutDeployments{
+		byKey:       make(map[string]*Deployment),
+		ids:         make(map[string]bool),
+		compToDepID: make(map[string]string),
+	}
+	for i := 0; i < len(layout); i++ {
+		res := <-resultChan
+		if res.err != nil {
+			return deps, res.err
+		}
+		deps.byKey[res.key] = res.dep
+		deps.ids[res.dep.Id] = true
+		fc := getFunctionComposition(app, res.dep.FunctionCompositionId)
+		if fc == nil {
+			panic(fmt.Sprintf("unexpected error: missing function composition %s for deployment %s", res.dep.FunctionCompositionId, res.dep.Id))
+		}
+		for _, comp := range fc.Components {
+			deps.compToDepID[comp] = res.dep.Id
+		}
+	}
+	return deps, nil
+}
+
+// applyRoutingTables sets the routing table of every deployment of the layout and returns the deployments
+// that the tables route to
+func (c *latencyController) applyRoutingTables(app *FunctionApp, layout Layout, fcByKey map[string]*FunctionComposition,
+	deps layoutDeployments, oldCompToDepID map[string]string) (map[string]bool, error) {
+	referenced := make(map[string]bool)
+	for node, compositionInfo := range layout {
+		componentNames := profileNames(compositionInfo)
+		matchedFc := fcByKey[componentsKey(componentNames)]
+		depKey := matchedFc.Id + "@" + node
+		dep := deps.byKey[depKey]
+		if dep == nil {
+			panic(fmt.Sprintf("unexpected error: missing deployment for key %s", depKey))
+		}
+
+		rt := routingTable(app, dep.Id, componentNames, deps.compToDepID, oldCompToDepID, referenced)
+		if err := c.composer.SetRoutingTable(dep.Id, rt); err != nil {
+			return nil, fmt.Errorf("failed to set routing table for deployment %s: %w", dep.Id, err)
+		}
+		log.Printf("Set routing table for deployment %s: %v", dep.Id, rt)
+	}
+	return referenced, nil
+}
+
+// switchEntryPoint points the entry point of the app (its DNS record) to the deployment of its first component
+func (c *latencyController) switchEntryPoint(app *FunctionApp, compToDepID map[string]string) error {
 	//TODO: this list is not necessarily ordered, but its fine for now
 	firstComponent := app.Components[0].Name
 	firstDepID, ok := compToDepID[firstComponent]
@@ -174,16 +217,7 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 		return fmt.Errorf("failed to update DNS record for app %s: %w", app.Id, err)
 	}
 	log.Printf("Updated DNS record for app %s to deployment %s (first component: %s)", app.Id, firstDepID, firstComponent)
-	logPhase(appId, "dns_updated", "", firstDepID, 0)
-
-	c.logReconfigComplete(appId)
-
-	// Cleanup: remove the deployments that are neither part of the new layout, nor routed to, nor kept warm
-	keepKeys := c.prewarmKeepKeys(app, fcByKey)
-	go c.removeUnusedDeployments(app, func(fc *FunctionComposition, d *Deployment) bool {
-		return activeDepIDs[d.Id] || referencedDepIDs[d.Id] || keepKeys[fc.Id+"@"+d.Node]
-	})
-
+	logPhase(app.Id, "dns_updated", "", firstDepID, 0)
 	return nil
 }
 
