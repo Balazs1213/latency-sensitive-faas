@@ -218,15 +218,8 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 	// build and apply routing tables
 	referencedDepIDs := make(map[string]bool)
 	for node, compositionInfo := range layout {
-		comps := compositionInfo.ComponentProfiles
-
-		componentNames := make([]string, len(comps))
-		for i, cp := range comps {
-			componentNames[i] = cp.Name
-		}
-
-		fcKey := componentsKey(componentNames)
-		matchedFc := fcByKey[fcKey]
+		componentNames := profileNames(compositionInfo)
+		matchedFc := fcByKey[componentsKey(componentNames)]
 		depKey := matchedFc.Id + "@" + node
 		dep := activeDepsByKey[depKey]
 
@@ -234,39 +227,7 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 			panic(fmt.Sprintf("unexpected error: missing deployment for key %s", depKey))
 		}
 
-		rt := make(RoutingTable)
-		for _, comp := range componentNames {
-			var routes []Route
-			for _, link := range app.Links {
-				if link.From != comp {
-					continue
-				}
-				if targetDepID, ok := compToDepID[link.To]; ok {
-					// If the target deployment is the same as the current deployment, set Function to "local"
-					functionField := targetDepID
-					if dep.Id == targetDepID {
-						functionField = "local"
-					}
-					routes = append(routes, Route{To: link.To, Function: functionField})
-					referencedDepIDs[targetDepID] = true
-					continue
-				}
-				// fallback: use old deployment if available
-				if oldDepID, ok := oldCompToDepID[link.To]; ok {
-					functionField := oldDepID
-					if dep.Id == oldDepID {
-						functionField = "local"
-					}
-					routes = append(routes, Route{To: link.To, Function: functionField})
-					referencedDepIDs[oldDepID] = true
-					log.Printf("Warning: using fallback routing for component %s to old deployment %s", link.To, oldDepID)
-					continue
-				}
-				panic(fmt.Sprintf("no new or fallback deployment available for component %s", link.To))
-			}
-			rt[comp] = routes
-		}
-
+		rt := routingTable(app, dep.Id, componentNames, compToDepID, oldCompToDepID, referencedDepIDs)
 		err = c.composer.SetRoutingTable(dep.Id, rt)
 		if err != nil {
 			return fmt.Errorf("failed to set routing table for deployment %s: %w", dep.Id, err)
@@ -301,6 +262,43 @@ func (c *latencyController) deployLayout(appId string, layout Layout, isUpgrade 
 	})
 
 	return nil
+}
+
+// routingTable builds the routing table of a deployment: for every link of its components the deployment that
+// serves the link's target ("local" when it is the deployment itself). The deployments routed to are added to
+// referenced, so that the cleanup keeps them.
+func routingTable(app *FunctionApp, depID string, componentNames []string, compToDepID, oldCompToDepID map[string]string, referenced map[string]bool) RoutingTable {
+	rt := make(RoutingTable)
+	for _, comp := range componentNames {
+		var routes []Route
+		for _, link := range app.Links {
+			if link.From != comp {
+				continue
+			}
+			targetDepID := routeTarget(link.To, compToDepID, oldCompToDepID)
+			functionField := targetDepID
+			if depID == targetDepID {
+				functionField = "local"
+			}
+			routes = append(routes, Route{To: link.To, Function: functionField})
+			referenced[targetDepID] = true
+		}
+		rt[comp] = routes
+	}
+	return rt
+}
+
+// routeTarget returns the deployment that serves a component: its deployment in the new layout or, as a
+// fallback, its deployment in the old layout
+func routeTarget(comp string, compToDepID, oldCompToDepID map[string]string) string {
+	if depID, ok := compToDepID[comp]; ok {
+		return depID
+	}
+	if oldDepID, ok := oldCompToDepID[comp]; ok {
+		log.Printf("Warning: using fallback routing for component %s to old deployment %s", comp, oldDepID)
+		return oldDepID
+	}
+	panic(fmt.Sprintf("no new or fallback deployment available for component %s", comp))
 }
 
 // logReconfigComplete logs the end-to-end duration of the app's switch, measured from the decision
@@ -450,9 +448,14 @@ func (c *latencyController) removeInactiveDeployments(appId string) {
 
 // compositionKey is the components key of a layout composition, the same key the deployments are matched by
 func compositionKey(ci CompositionInfo) string {
+	return componentsKey(profileNames(ci))
+}
+
+// profileNames returns the component names of a layout composition
+func profileNames(ci CompositionInfo) []string {
 	names := make([]string, len(ci.ComponentProfiles))
 	for i, cp := range ci.ComponentProfiles {
 		names[i] = cp.Name
 	}
-	return componentsKey(names)
+	return names
 }
