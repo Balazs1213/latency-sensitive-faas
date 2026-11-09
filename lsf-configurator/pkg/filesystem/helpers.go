@@ -1,3 +1,4 @@
+// Package filesystem provides file and directory helpers for the uploaded app sources and the build directories.
 package filesystem
 
 import (
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 )
 
+// SaveMultiPartFile saves an uploaded file into saveLocation under its original file name.
 func SaveMultiPartFile(fileHeader *multipart.FileHeader, saveLocation string) error {
 	file, err := fileHeader.Open()
 	if err != nil {
@@ -31,6 +33,7 @@ func SaveMultiPartFile(fileHeader *multipart.FileHeader, saveLocation string) er
 	return nil
 }
 
+// CopyFileToDstFolder copies a file into dstFolder under the same name and returns the path of the copy.
 func CopyFileToDstFolder(source string, dstFolder string) (string, error) {
 	srcFile, err := os.Open(source)
 	if err != nil {
@@ -57,10 +60,12 @@ func CopyFileToDstFolder(source string, dstFolder string) (string, error) {
 	return destPath, nil
 }
 
+// CreateDir creates a directory with all missing parents; an existing directory is not an error.
 func CreateDir(path string) error {
 	return os.MkdirAll(path, os.ModePerm)
 }
 
+// DeleteDir removes a directory with all its contents.
 func DeleteDir(path string) error {
 	err := os.RemoveAll(path)
 	if err != nil {
@@ -69,11 +74,14 @@ func DeleteDir(path string) error {
 	return nil
 }
 
+// FileExists reports whether a file exists at path. A stat error other than "not exist" also counts as existing.
 func FileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil || !os.IsNotExist(err)
 }
 
+// CopyFilesByNames copies the files of srcDir whose names are in filenames into destDir and returns the paths of
+// the copies. Subdirectories are searched only if recursive is set.
 func CopyFilesByNames(srcDir, destDir string, filenames []string, recursive bool) ([]string, error) {
 	var copiedFiles []string
 

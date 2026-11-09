@@ -1,3 +1,4 @@
+// Package db opens the SQLite database of the configurator and applies its schema.
 package db
 
 import (
@@ -12,6 +13,8 @@ import (
 //go:embed schema.sql
 var schemaFS embed.FS
 
+// InitDB opens the SQLite database at path, enables WAL mode and a busy timeout, and runs the statements of the
+// embedded schema.
 func InitDB(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {

@@ -15,6 +15,8 @@ import (
 
 const knativeLocalGateway = "knative-local-gateway.istio-system.svc.cluster.local"
 
+// EnsureDNSRecord creates or updates the VirtualService of an app's entry point, which routes the app's requests
+// to targetServiceName through the Knative local gateway.
 func (c *Client) EnsureDNSRecord(ctx context.Context, namespace, appName, targetServiceName string) error {
 	vsName := generateServiceName(appName)
 	targetHost := fmt.Sprintf("%s.%s.svc.cluster.local", targetServiceName, namespace)

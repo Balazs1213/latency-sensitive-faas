@@ -7,6 +7,7 @@ import (
 	"sync"
 )
 
+// Task is a unit of work run by a worker pool; a task that returns an error is retried.
 type Task func() (interface{}, error)
 
 type taskInternal struct {
@@ -16,11 +17,13 @@ type taskInternal struct {
 	resultChan chan Result
 }
 
+// Result is the outcome of a task: its value, or the error of its last attempt.
 type Result struct {
 	Value interface{}
 	Err   error
 }
 
+// WorkerPool runs tasks on a fixed number of workers and retries failed tasks up to their retry limit.
 type WorkerPool struct {
 	taskQueue chan taskInternal
 	wg        sync.WaitGroup
@@ -29,11 +32,13 @@ type WorkerPool struct {
 	cancel    context.CancelFunc
 }
 
+// Scheduler runs tasks asynchronously and delivers their results on channels.
 type Scheduler interface {
 	AddTask(task Task, maxRetries int) <-chan Result
 	Close()
 }
 
+// NewScheduler starts a worker pool with numWorkers workers and a task queue of length queueSize.
 func NewScheduler(numWorkers int, queueSize int) Scheduler {
 	ctx, cancel := context.WithCancel(context.Background())
 	w := WorkerPool{
@@ -50,6 +55,8 @@ func NewScheduler(numWorkers int, queueSize int) Scheduler {
 	return &w
 }
 
+// AddTask queues a task and returns a channel that delivers its result once it succeeds or runs out of retries. If
+// the pool shuts down before the task is queued, the channel delivers an error.
 func (w *WorkerPool) AddTask(task Task, maxRetries int) <-chan Result {
 	resultChan := make(chan Result, 1)
 	go func() {
@@ -68,6 +75,7 @@ func (w *WorkerPool) AddTask(task Task, maxRetries int) <-chan Result {
 	return resultChan
 }
 
+// Close stops the worker pool and waits for its workers to exit.
 func (w *WorkerPool) Close() {
 	w.once.Do(func() {
 		w.cancel()

@@ -1,3 +1,5 @@
+// Package main is the lsf-configurator backend: it wires the core services to their implementations, starts the
+// latency controller unless LOCAL_MODE is set, and serves the HTTP API and the frontend on port 8080.
 package main
 
 import (

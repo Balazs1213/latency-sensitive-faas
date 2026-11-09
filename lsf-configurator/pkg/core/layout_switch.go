@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+// ReconfigEvent is logged as [RECONFIG_EVENT] when the layout switch of an app completes: the start time of the
+// switch and its duration, both measured from the decision.
 type ReconfigEvent struct {
 	EventType  string  `json:"event_type"`
 	AppID      string  `json:"app_id"`

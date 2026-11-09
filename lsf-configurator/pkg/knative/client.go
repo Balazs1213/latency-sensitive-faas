@@ -1,3 +1,4 @@
+// Package knative initializes, deploys and removes function compositions with the Knative func library.
 package knative
 
 import (
@@ -14,14 +15,17 @@ import (
 	knativefunc "knative.dev/func/pkg/knative"
 )
 
+// CompositionTemplateName is the name of the function template that every composition is created from.
 const CompositionTemplateName = "composition"
 
+// Client initializes, deploys and removes function compositions through the Knative func library.
 type Client struct {
 	fnClient           *fn.Client
 	imageRegistry      string
 	resultStoreAddress string
 }
 
+// NewClient creates a Client that uses the templates, the image registry and the result store address of conf.
 func NewClient(conf config.Configuration) *Client {
 	o := []fn.Option{fn.WithRepository(conf.TemplatesPath), fn.WithVerbose(conf.VerboseLogs)}
 
@@ -40,6 +44,8 @@ func NewClient(conf config.Configuration) *Client {
 	}
 }
 
+// Init creates a build directory for fc from the composition template, copies the composition's non-component
+// files into it and runs the bootstrapper of the runtime. It returns the build directory.
 func (c *Client) Init(ctx context.Context, fc core.FunctionComposition, runtime, sourcePath string) (string, error) {
 	buildDir, err := createBuildDir(sourcePath)
 	if err != nil {
@@ -78,6 +84,8 @@ func (c *Client) Init(ctx context.Context, fc core.FunctionComposition, runtime,
 	return buildDir, nil
 }
 
+// Deploy deploys a deployment as a Knative service pinned to its node, with its scale and resources and with
+// environment variables that name the deployment, the app and the result store.
 func (c *Client) Deploy(ctx context.Context, deployment core.Deployment, image, appId string) error {
 	f := fn.Function{
 		Name:      deployment.Id,
@@ -124,6 +132,7 @@ func (c *Client) Deploy(ctx context.Context, deployment core.Deployment, image, 
 	return err
 }
 
+// Delete removes the Knative service of a deployment.
 func (c *Client) Delete(ctx context.Context, deployment core.Deployment) error {
 	f := fn.Function{
 		Name:      deployment.Id,

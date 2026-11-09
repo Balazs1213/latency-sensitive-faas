@@ -11,22 +11,27 @@ import (
 	"context"
 )
 
+// KnClient prepares the build directory of a function composition and deploys and deletes deployments as Knative
+// services.
 type KnClient interface {
 	Init(ctx context.Context, fc FunctionComposition, runtime, sourcePath string) (string, error)
 	Deploy(ctx context.Context, deployment Deployment, image, appId string) error
 	Delete(ctx context.Context, deployment Deployment) error
 }
 
+// RoutingClient stores and deletes the routing tables of deployments in the routing-table store.
 type RoutingClient interface {
 	SetRoutingTable(deployment Deployment) error
 	DeleteRoutingTable(deploymentId string) error
 }
 
+// Builder builds the image of a function composition; NotifyBuildFinished is called when a build has finished.
 type Builder interface {
 	Build(ctx context.Context, fc FunctionComposition, buildDir string) error
 	NotifyBuildFinished()
 }
 
+// AlertClient manages the alert connector and the latency alert rules of services in the alerting backend.
 type AlertClient interface {
 	EnsureAlertConnector(ctx context.Context, connectorName, indexName string) (string, error)
 	CreateOrUpdateRule(ctx context.Context, serviceName string, latencyThresholdMs int) (string, error)
@@ -38,6 +43,7 @@ type ComponentRuntime struct {
 	Count int     // number of spans the average is computed from
 }
 
+// MetricsReader reads node metrics and the measured latencies of apps and components from the metrics backend.
 type MetricsReader interface {
 	QueryNodeMetrics() ([]NodeMetrics, error)
 	Query95thPercentileAppRuntimes(timeRangeGte string) (map[string]float64, map[string]int, error)
@@ -46,15 +52,20 @@ type MetricsReader interface {
 	EnsureIndex(ctx context.Context, indexName string) error
 }
 
+// Controller is the latency controller: it registers platform-managed function apps and, once started, keeps
+// their latency under the limit by switching between their layout candidates.
 type Controller interface {
 	Start(ctx context.Context) error
 	RegisterFunctionApp(creationData FunctionAppCreationData) (*FunctionApp, error)
 }
 
+// LayoutCalculator calculates the layout of a scenario: which components are composed together on which node,
+// with how many replicas and what resources.
 type LayoutCalculator interface {
 	CalculateLayout(scenario LayoutScenario) (Layout, error)
 }
 
+// ScenarioManager generates the layout candidates of an app, keyed by layout key.
 type ScenarioManager interface {
 	GenerateLayoutCandidates(
 		components []Component,
@@ -63,15 +74,19 @@ type ScenarioManager interface {
 		memoryAvailable int) (map[string]Layout, error)
 }
 
+// ResultsClient reads the latest results of an app from the result store.
 type ResultsClient interface {
 	GetAppResults(appId string, count int) ([]AppResult, error)
 }
 
+// DNSClient manages the DNS record of an app's entry point, which points to the deployment receiving the app's
+// requests.
 type DNSClient interface {
 	EnsureDNSRecord(ctx context.Context, namespace, appName, targetServiceName string) error
 	DeleteDNSRecord(ctx context.Context, namespace, appName string) error
 }
 
+// ScaleClient sets the min-scale of Knative services and reads how many of their pods are ready.
 type ScaleClient interface {
 	SetMinScale(ctx context.Context, namespace, serviceName string, minScale int) error
 	ReadyPods(ctx context.Context, namespace, serviceName string) (int, error)

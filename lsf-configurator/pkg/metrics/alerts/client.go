@@ -1,3 +1,4 @@
+// Package alerts manages latency alerting through the Kibana alerting API.
 package alerts
 
 import (
@@ -20,6 +21,7 @@ type alertClient struct {
 	connectorId string
 }
 
+// NewAlertClient returns an AlertClient for the alerting API at alertApiUrl, using basic authentication.
 func NewAlertClient(alertApiUrl, username, password string) core.AlertClient {
 	return &alertClient{
 		alertApiUrl: alertApiUrl,

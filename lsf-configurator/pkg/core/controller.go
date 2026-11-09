@@ -10,25 +10,28 @@ import (
 	"time"
 )
 
-// set target concurrency globally to 1 for now, but this can be different per function composition depending on how CPU-bound they are
-// this should be measured and set accordingly for each function composition)
+// Controller constants: thresholds and timings of the latency control loop and the layout switches.
 const (
-	minimalTraceCount       = 10
-	logInterval             = 1 * time.Minute
-	minConsecutiveDowngrade = 300
-	reuseDeployments        = true
+	minimalTraceCount       = 10               // fewest traces (or component spans) in the metric window for a measurement to be used
+	logInterval             = 1 * time.Minute  // interval of the periodic latency log
+	minConsecutiveDowngrade = 300              // downgrade counter value at which an app is downgraded to the next smaller layout
+	reuseDeployments        = true             // a layout switch keeps the existing deployment of a composition on a node
 	unboostQuietPeriod      = 60 * time.Second // adaptive prewarm: scale the standby back after this long below the threshold
 	rateScaleDownHold       = 60 * time.Second // rate following: scale-down hold until the pod startup time is measured
 	idleDowngradeStep       = 20               // downgrade counter step of a tick without traffic (a low-latency tick counts 1)
 )
 
+// MetricType selects the latency aggregate that the controller compares with the latency limit.
 type MetricType string
 
+// Supported metric types: the 95th percentile and the average of the app latencies.
 const (
 	MetricTypeP95     MetricType = "P95"
 	MetricTypeAverage MetricType = "AVG"
 )
 
+// MetricQueryFunc queries a latency aggregate of every app in the time range starting at timeRangeGte. It returns
+// the latency in milliseconds and the trace count, both keyed by app ID.
 type MetricQueryFunc func(timeRangeGte string) (map[string]float64, map[string]int, error)
 
 type latencyController struct {
@@ -67,6 +70,8 @@ type latencyController struct {
 
 }
 
+// NewController creates the latency controller. An unknown prewarm mode falls back to "off", an unknown metric
+// type to P95, and a metric window that cannot be parsed to 15 seconds.
 func NewController(composer *Composer, metrics MetricsReader, scenarioManager ScenarioManager,
 	delay time.Duration, deployNamespace string, availableNodeMemoryGb int, aggMetricType MetricType,
 	metricQueryTimeRange string, latencyDowngradeFactor float64, prewarmMode string, targetUtilization float64, boostRateFactor float64, switchRateFactor float64, measuredCapacity bool, rateForecast bool) Controller {

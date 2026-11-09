@@ -1,3 +1,5 @@
+// Package api implements the HTTP API of the configurator: the handlers of function apps, function compositions,
+// deployments, metrics, results and the health check, with their request DTOs and middlewares.
 package api
 
 import (
@@ -7,10 +9,13 @@ import (
 	"net/http"
 )
 
+// AppsPath is the URL prefix of the function app endpoints.
 const (
 	AppsPath = "/function_apps"
 )
 
+// HandlerApps serves the function app endpoints: listing, getting, creating (also in bulk) and deleting apps, and
+// updating their latency limit.
 type HandlerApps struct {
 	composer   *core.Composer
 	controller core.Controller
@@ -18,6 +23,7 @@ type HandlerApps struct {
 	mux        *http.ServeMux
 }
 
+// NewHandlerApps creates a HandlerApps with its routes registered on an internal mux.
 func NewHandlerApps(composer *core.Composer, controller core.Controller, conf config.Configuration) *HandlerApps {
 	h := &HandlerApps{
 		composer:   composer,

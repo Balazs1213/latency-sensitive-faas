@@ -1,3 +1,5 @@
+// Package kubeclient manages Kubernetes resources of the function apps: the Istio VirtualServices of their entry
+// points and the scale of their Knative services.
 package kubeclient
 
 import (
@@ -11,11 +13,13 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// Client accesses the cluster through an Istio client and a dynamic client.
 type Client struct {
 	istio   istioclient.Interface
 	dynamic dynamic.Interface // used to patch Knative services (no typed Knative client in the module)
 }
 
+// NewKubeclient creates a Client from the in-cluster configuration, or from the local kubeconfig outside a cluster.
 func NewKubeclient() (*Client, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {

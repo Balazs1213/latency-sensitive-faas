@@ -7,16 +7,20 @@ import (
 	"net/http"
 )
 
+// FunctionCompositionsPath is the URL prefix of the function composition endpoints.
 const (
 	FunctionCompositionsPath = "/function_compositions"
 )
 
+// HandlerFunctionCompositions serves the function composition endpoints: creating and deleting compositions, and
+// the build notifications sent by the Tekton pipeline.
 type HandlerFunctionCompositions struct {
 	composer *core.Composer
 	conf     config.Configuration
 	mux      *http.ServeMux
 }
 
+// NewHandlerFunctionCompositions creates a HandlerFunctionCompositions with its routes registered on an internal mux.
 func NewHandlerFunctionCompositions(composer *core.Composer, conf config.Configuration) *HandlerFunctionCompositions {
 	h := &HandlerFunctionCompositions{
 		composer: composer,

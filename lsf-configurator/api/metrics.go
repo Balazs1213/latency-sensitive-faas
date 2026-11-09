@@ -8,16 +8,19 @@ import (
 	"net/http"
 )
 
+// MetricsPath is the URL prefix of the metrics endpoints.
 const (
 	MetricsPath = "/metrics"
 )
 
+// HandlerMetrics serves the metrics endpoints: currently the P95 latency of every app over the last five minutes.
 type HandlerMetrics struct {
 	metricsClient core.MetricsReader
 	conf          config.Configuration
 	mux           *http.ServeMux
 }
 
+// NewHandlerMetrics creates a HandlerMetrics with its routes registered on an internal mux.
 func NewHandlerMetrics(metricsClient core.MetricsReader, conf config.Configuration) *HandlerMetrics {
 	h := &HandlerMetrics{
 		metricsClient: metricsClient,

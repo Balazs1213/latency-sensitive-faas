@@ -1,3 +1,4 @@
+// Package repos implements the repositories of package core on the SQLite database.
 package repos
 
 import (
@@ -14,6 +15,7 @@ type functionAppRepo struct {
 	db *sql.DB
 }
 
+// NewFunctionAppRepository returns a FunctionAppRepository backed by db.
 func NewFunctionAppRepository(db *sql.DB) core.FunctionAppRepository {
 	return &functionAppRepo{db: db}
 }
@@ -181,6 +183,7 @@ type functionCompositionRepo struct {
 	db *sql.DB
 }
 
+// NewFunctionCompositionRepository returns a FunctionCompositionRepository backed by db.
 func NewFunctionCompositionRepository(db *sql.DB) core.FunctionCompositionRepository {
 	return &functionCompositionRepo{db: db}
 }
@@ -280,6 +283,7 @@ type deploymentRepo struct {
 	db *sql.DB
 }
 
+// NewDeploymentRepository returns a deployment repository backed by db.
 func NewDeploymentRepository(db *sql.DB) *deploymentRepo {
 	return &deploymentRepo{db: db}
 }

@@ -5,6 +5,8 @@ import (
 	"os"
 )
 
+// SpaHandler serves the built frontend from publicDir. A path without a file gets index.html, so that the
+// frontend's client-side routes work.
 func SpaHandler(publicDir string) http.Handler {
 	fs := http.FileServer(http.Dir(publicDir))
 

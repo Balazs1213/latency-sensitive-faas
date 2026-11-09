@@ -1,3 +1,4 @@
+// Package config loads the configuration of the configurator from environment variables and an optional .env file.
 package config
 
 import (
@@ -10,6 +11,8 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// Configuration holds the configurator settings. Each field is read from the environment variable in its env tag,
+// or taken from its default tag when the variable is unset or empty.
 type Configuration struct {
 	UploadDir                      string   `env:"UPLOAD_DIR"`
 	TemplatesPath                  string   `env:"TEMPLATES_PATH"`
@@ -65,6 +68,8 @@ type Configuration struct {
 	RateForecast bool `env:"RATE_FORECAST" default:"false"`
 }
 
+// Init loads the .env file if there is one and fills a Configuration from the environment. It exits the process
+// when a value cannot be parsed as the type of its field.
 func Init() Configuration {
 	if err := godotenv.Load(); err != nil {
 		log.Printf("No .env file found. Using system environment variables")

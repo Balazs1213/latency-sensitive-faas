@@ -11,6 +11,7 @@ import (
 	"strings"
 )
 
+// File names and identifiers that the Python bootstrapper uses in the template and in the component files.
 const (
 	ReqFileName          = "requirements.txt"
 	ConfigFile           = "config"
@@ -18,10 +19,13 @@ const (
 	Extension            = ".py"
 )
 
+// PythonBootstrapper prepares the build directory of a Python function composition.
 type PythonBootstrapper struct {
 	BaseBootstrapper
 }
 
+// Setup copies the component files into the build directory and checks that each defines a handler function, then
+// merges the app's requirements.txt into the template's and registers the component handlers in config.py.
 func (b *PythonBootstrapper) Setup() error {
 	componentNames := []string{}
 	filesToCopy := []string{}

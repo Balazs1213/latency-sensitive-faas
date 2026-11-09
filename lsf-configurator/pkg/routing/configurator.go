@@ -1,3 +1,4 @@
+// Package routing stores the routing tables of deployments in Redis, where the function compositions read them.
 package routing
 
 import (
@@ -9,13 +10,16 @@ import (
 	redis "github.com/go-redis/redis/v7"
 )
 
+// RouteConfigurator stores the routing tables of deployments in Redis under the deployment ID.
 type RouteConfigurator struct {
 	RedisUrl string
 	RedisCli redis.Client
 }
 
+// LocalRoute is the route target of a component that runs in the same composition.
 const LocalRoute = "local"
 
+// NewRouteConfigurator returns a RoutingClient that writes to the Redis at redisUrl.
 func NewRouteConfigurator(redisUrl string) core.RoutingClient {
 	return &RouteConfigurator{
 		RedisUrl: redisUrl,
@@ -23,6 +27,8 @@ func NewRouteConfigurator(redisUrl string) core.RoutingClient {
 	}
 }
 
+// SetRoutingTable converts the routing table of a deployment, replacing deployment IDs with their cluster URLs,
+// and stores it in Redis under the deployment ID.
 func (rc *RouteConfigurator) SetRoutingTable(deployment core.Deployment) error {
 	rtDto := make(RoutingTable)
 
@@ -57,6 +63,7 @@ func (rc *RouteConfigurator) SetRoutingTable(deployment core.Deployment) error {
 	return nil
 }
 
+// DeleteRoutingTable removes the routing table of a deployment from Redis.
 func (rc *RouteConfigurator) DeleteRoutingTable(deploymentId string) error {
 	err := rc.RedisCli.Del(deploymentId).Err()
 	if err != nil {

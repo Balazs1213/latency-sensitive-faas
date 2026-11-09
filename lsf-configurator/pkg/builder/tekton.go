@@ -1,3 +1,4 @@
+// Package builder builds the container images of function compositions with Tekton pipelines.
 package builder
 
 import (
@@ -19,8 +20,12 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// TimeoutDuration is how long a build holds its slot of the concurrency limit if no build notification frees it
+// earlier.
 const TimeoutDuration = 8 * time.Minute // Default timeout for builds
 
+// TektonConfig holds the Tekton settings of the image builds: the namespace and pipeline to run, the notification
+// URL, the workspace PVC, the image registry and repository, and the service account.
 type TektonConfig struct {
 	Namespace      string
 	Pipeline       string
@@ -31,11 +36,14 @@ type TektonConfig struct {
 	ServiceAccount string
 }
 
+// TektonBuilder starts Tekton PipelineRuns that build the images of function compositions, with a limit on how
+// many builds run at the same time.
 type TektonBuilder struct {
 	TektonConfig
 	concurrencyLimiter chan struct{}
 }
 
+// NewTektonBuilder creates a TektonBuilder that runs at most concurrencyLimit builds at the same time.
 func NewTektonBuilder(cfg TektonConfig, concurrencyLimit int) *TektonBuilder {
 	return &TektonBuilder{
 		TektonConfig:       cfg,
@@ -43,6 +51,8 @@ func NewTektonBuilder(cfg TektonConfig, concurrencyLimit int) *TektonBuilder {
 	}
 }
 
+// Build starts a PipelineRun that builds the image of fc from buildDir, without waiting for it to finish. It blocks
+// while the concurrency limit is reached; a slot is freed by NotifyBuildFinished or after TimeoutDuration.
 func (b *TektonBuilder) Build(ctx context.Context, fc core.FunctionComposition, buildDir string) error {
 	// Acquire semaphore
 	b.concurrencyLimiter <- struct{}{}
@@ -127,6 +137,7 @@ func (b *TektonBuilder) Build(ctx context.Context, fc core.FunctionComposition, 
 	return nil
 }
 
+// NotifyBuildFinished frees the concurrency slot of a finished build.
 func (b *TektonBuilder) NotifyBuildFinished() {
 	b.releaseSemaphore()
 }

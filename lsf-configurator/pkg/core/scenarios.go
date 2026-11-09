@@ -5,6 +5,8 @@ import (
 	"sort"
 )
 
+// Keys of the layout candidates: the layouts calculated for the minimum and for the maximum invocation rates of
+// the links.
 const (
 	LayoutKeyMin = "min_rate"
 	// LayoutKeyAvg = "avg_rate"
@@ -35,6 +37,8 @@ type scenarioManager struct {
 	memorySafetyBufferRatio     float64
 }
 
+// NewScenarioManager creates a ScenarioManager that calculates the layout candidates with calculator, using the
+// given parameters of the resource model.
 func NewScenarioManager(calculator LayoutCalculator, targetConcurrency int, invocationSharedMemoryRatio float64,
 	componentMCPUAllocation int, overheadMCPUAllocation int, targetUtilization float64, memorySafetyBufferRatio float64) ScenarioManager {
 	return &scenarioManager{

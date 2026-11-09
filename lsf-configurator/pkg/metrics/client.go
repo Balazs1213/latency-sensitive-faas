@@ -1,3 +1,4 @@
+// Package metrics reads node metrics and app and component latencies from the Elasticsearch APM data.
 package metrics
 
 import (
@@ -20,6 +21,8 @@ const (
 	tracesIndex  = ".ds-traces-apm*"
 )
 
+// ApiKeyConfig holds an Elasticsearch API key in the format of the key creation response. It is not used at the
+// moment.
 type ApiKeyConfig struct {
 	Id                  string `json:"id"`
 	Name                string `json:"name"`
@@ -32,6 +35,7 @@ type metricsClient struct {
 	client *elasticsearch.TypedClient
 }
 
+// NewMetricsReader creates a MetricsReader for the Elasticsearch cluster at backendAddr.
 func NewMetricsReader(backendAddr string) (core.MetricsReader, error) {
 	cfg := elasticsearch.Config{
 		Addresses: []string{

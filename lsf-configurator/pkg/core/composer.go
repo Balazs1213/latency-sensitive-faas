@@ -1,3 +1,6 @@
+// Package core holds the domain models and interfaces of the platform, the Composer that builds and deploys
+// function compositions, and the latency controller that switches the apps between layouts. The implementations of
+// the interfaces live in sibling packages.
 package core
 
 import (
@@ -13,6 +16,8 @@ import (
 	"github.com/apex/log"
 )
 
+// Settings of the Composer's worker pool: how many times a failed task is retried, the number of workers and the
+// size of the task queue.
 const (
 	MaxRetries     = 3
 	WorkerPoolSize = 10
@@ -24,6 +29,8 @@ var runtimeExtensions = map[string]string{
 	"python": ".py", // Python
 }
 
+// Composer orchestrates function apps, function compositions and deployments: it persists them and runs their
+// builds and deployments asynchronously on a worker pool.
 type Composer struct {
 	knClient           KnClient
 	scheduler          Scheduler
@@ -39,6 +46,7 @@ type Composer struct {
 	mu                 sync.Mutex
 }
 
+// NewComposer creates a Composer with its own worker pool.
 func NewComposer(
 	functionAppRepo FunctionAppRepository,
 	fcRepo FunctionCompositionRepository,
@@ -67,14 +75,18 @@ func NewComposer(
 
 // --- FUNCTION APPS ---
 
+// GetFunctionApp returns the function app with the given ID.
 func (c *Composer) GetFunctionApp(appId string) (*FunctionApp, error) {
 	return c.functionAppRepo.GetByID(appId)
 }
 
+// ListFunctionApps returns all function apps.
 func (c *Composer) ListFunctionApps() ([]*FunctionApp, error) {
 	return c.functionAppRepo.GetAll()
 }
 
+// CreateFunctionApp creates and persists a function app and saves its uploaded files into a new directory under
+// the upload directory. Uploaded files that belong to no component are recorded as the app's shared files.
 func (c *Composer) CreateFunctionApp(creationData FunctionAppCreationData) (*FunctionApp, error) {
 	id := uuid.New()
 	fcApp := FunctionApp{
@@ -116,6 +128,7 @@ func (c *Composer) CreateFunctionApp(creationData FunctionAppCreationData) (*Fun
 	return &fcApp, nil
 }
 
+// UpdateFunctionApp persists the changes of a function app.
 func (c *Composer) UpdateFunctionApp(app *FunctionApp) error {
 	if app == nil {
 		return fmt.Errorf("function app is nil")
@@ -126,6 +139,8 @@ func (c *Composer) UpdateFunctionApp(app *FunctionApp) error {
 	return nil
 }
 
+// DeleteFunctionApp deletes a function app. Its deployments, routing tables, source directory and DNS record are
+// removed asynchronously, so the app record is deleted before they are gone.
 func (c *Composer) DeleteFunctionApp(appId string) error {
 	app, err := c.functionAppRepo.GetByID(appId)
 	if err != nil || app == nil {
@@ -174,6 +189,8 @@ func (c *Composer) DeleteFunctionApp(appId string) error {
 	return nil
 }
 
+// RollbackBulk deletes the records of a failed bulk creation: the given deployments, compositions and app. It only
+// removes the database records; started builds and deployments are not undone.
 func (c *Composer) RollbackBulk(
 	app *FunctionApp,
 	compositions []*FunctionComposition,
@@ -212,12 +229,15 @@ func (c *Composer) DeploymentReadyPods(dep *Deployment) (int, error) {
 	return c.scaleClient.ReadyPods(context.TODO(), dep.Namespace, dep.Id)
 }
 
+// UpdateDNSRecord points the DNS record of an app's entry point to the given deployment.
 func (c *Composer) UpdateDNSRecord(appId, namespace, targetDeploymentId string) error {
 	return c.dnsClient.EnsureDNSRecord(context.TODO(), namespace, appId, targetDeploymentId)
 }
 
 // --- FUNCTION COMPOSITIONS ---
 
+// AddFunctionComposition adds a function composition of the given components to an app. With an image the
+// composition is marked as built; otherwise its build is started asynchronously.
 func (c *Composer) AddFunctionComposition(appId string, components []string, image string) (*FunctionComposition, error) {
 	fcApp, err := c.functionAppRepo.GetByID(appId)
 	if err != nil || fcApp == nil {
@@ -278,6 +298,8 @@ func (c *Composer) AddFunctionComposition(appId string, components []string, ima
 	return fc, nil
 }
 
+// DeleteFunctionComposition deletes the deployments of a function composition and then the composition itself,
+// asynchronously. If a deployment cannot be deleted, the composition is kept and its status is set to error.
 func (c *Composer) DeleteFunctionComposition(fcId string) error {
 	fc, err := c.fcRepo.GetByID(fcId)
 	if err != nil || fc == nil {
@@ -309,6 +331,9 @@ func (c *Composer) DeleteFunctionComposition(fcId string) error {
 
 // --- DEPLOYMENTS ---
 
+// CreateFcDeployment creates a deployment of a function composition and stores its routing table; a missing scale
+// or missing resources get the default values. A deployment of a composition that is not built yet starts when
+// NotifyBuildReady reports the image. The returned channel delivers the deployment result in both cases.
 func (c *Composer) CreateFcDeployment(fcId, namespace, node string, routingTable RoutingTable, scale Scale, resources Resources) (*Deployment, <-chan Result, error) {
 	fc, err := c.fcRepo.GetByID(fcId)
 	if err != nil || fc == nil {
@@ -366,6 +391,8 @@ func (c *Composer) CreateFcDeployment(fcId, namespace, node string, routingTable
 	return &deployment, resultChan, nil
 }
 
+// DeleteFcDeployment deletes the routing table and the record of a deployment and schedules the removal of its
+// Knative service. The returned channel delivers the result of the removal.
 func (c *Composer) DeleteFcDeployment(deploymentId string) (<-chan Result, error) {
 	deployment, err := c.deploymentRepo.GetByID(deploymentId)
 	if err != nil || deployment == nil {
@@ -386,6 +413,7 @@ func (c *Composer) DeleteFcDeployment(deploymentId string) (<-chan Result, error
 	return resultChan, nil
 }
 
+// SetRoutingTable replaces the routing table of a deployment in the routing-table store and in the database.
 func (c *Composer) SetRoutingTable(deploymentId string, table RoutingTable) error {
 	deployment, err := c.deploymentRepo.GetByID(deploymentId)
 	if err != nil || deployment == nil {
@@ -400,6 +428,8 @@ func (c *Composer) SetRoutingTable(deploymentId string, table RoutingTable) erro
 	return nil
 }
 
+// NotifyBuildReady handles the build notification of a function composition: it records the image, or the error
+// status of a failed build, and starts the deployments that were waiting for the build.
 func (c *Composer) NotifyBuildReady(fcId, imageURL string, status string) {
 	c.builder.NotifyBuildFinished()
 	fc, err := c.fcRepo.GetByID(fcId)
@@ -552,6 +582,7 @@ func isComponent(fileName string, runtime string, components []Component) bool {
 	return false
 }
 
+// Default scale and resources of a deployment created without them.
 const (
 	DefaultMinReplicas       = 1
 	DefaultMaxReplicas       = 3
@@ -560,6 +591,7 @@ const (
 	DefaultCPUmCores         = 250
 )
 
+// DefaultScaleValues returns the scale of a deployment created without one.
 func DefaultScaleValues() Scale {
 	return Scale{
 		MinReplicas:       DefaultMinReplicas,
@@ -568,6 +600,7 @@ func DefaultScaleValues() Scale {
 	}
 }
 
+// DefaultResources returns the resources of a deployment created without them.
 func DefaultResources() Resources {
 	return Resources{
 		Memory: DefaultMemoryMB,

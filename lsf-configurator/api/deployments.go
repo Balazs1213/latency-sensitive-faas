@@ -7,16 +7,19 @@ import (
 	"net/http"
 )
 
+// DeploymentsPath is the URL prefix of the deployment endpoints.
 const (
 	DeploymentsPath = "/deployments"
 )
 
+// HandlerDeployments serves the deployment endpoints: creating a deployment and replacing its routing table.
 type HandlerDeployments struct {
 	composer *core.Composer
 	conf     config.Configuration
 	mux      *http.ServeMux
 }
 
+// NewHandlerDeployments creates a HandlerDeployments with its routes registered on an internal mux.
 func NewHandlerDeployments(composer *core.Composer, conf config.Configuration) *HandlerDeployments {
 	h := &HandlerDeployments{
 		composer: composer,

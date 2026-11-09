@@ -5,6 +5,7 @@ import (
 	"net/http"
 )
 
+// CorsMiddleware allows cross-origin requests from any origin and answers preflight OPTIONS requests itself.
 func CorsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -18,6 +19,7 @@ func CorsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// LoggingMiddleware logs the method and URL of every request before passing it on.
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[%p] %s %s", r, r.Method, r.URL)

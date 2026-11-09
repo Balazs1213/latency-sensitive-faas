@@ -7,13 +7,16 @@ import (
 	"strconv"
 )
 
+// ResultsPath is the URL prefix of the results endpoint.
 const ResultsPath = "/results"
 
+// HandlerResults serves the latest results of an app from the result store.
 type HandlerResults struct {
 	resultsClient core.ResultsClient
 	mux           *http.ServeMux
 }
 
+// NewHandlerResults creates a HandlerResults with its route registered on an internal mux.
 func NewHandlerResults(resultsClient core.ResultsClient) *HandlerResults {
 	h := &HandlerResults{
 		resultsClient: resultsClient,

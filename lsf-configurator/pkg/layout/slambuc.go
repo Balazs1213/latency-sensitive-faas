@@ -1,3 +1,5 @@
+// Package layout calculates the layouts of function apps: it partitions the call graph into compositions with
+// SLAMBUC and calculates their replicas and resources.
 package layout
 
 import (
@@ -16,6 +18,8 @@ type slambucCalculator struct {
 	maxIterations int
 }
 
+// NewLayoutCalculator returns a LayoutCalculator that runs the SLAMBUC script with pythonCmd for the given platform
+// nodes and platform delay.
 func NewLayoutCalculator(pythonCmd, script string, platformNodes []string, platformDelay int) core.LayoutCalculator {
 	return &slambucCalculator{
 		pythonCmd:     pythonCmd,
@@ -269,6 +273,7 @@ func initializeMaxReplicas(profiles []core.ComponentProfile) map[string]int {
 	return maxMap
 }
 
+// MBToGB converts megabytes to gigabytes.
 func MBToGB(mb int) float64 {
 	return float64(mb) / 1024
 }

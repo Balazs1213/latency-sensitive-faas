@@ -1,3 +1,4 @@
+// Package uuid generates short random IDs.
 package uuid
 
 import (
@@ -6,6 +7,8 @@ import (
 	guuid "github.com/google/uuid"
 )
 
+// New returns a random UUID encoded in base 36, which is shorter than the usual form and contains only digits and
+// lowercase letters.
 func New() string {
 	uuid := guuid.New()
 	bigInt := new(big.Int)

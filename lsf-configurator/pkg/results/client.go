@@ -1,3 +1,4 @@
+// Package results reads the final results of function apps from Redis.
 package results
 
 import (
@@ -15,6 +16,7 @@ type redisResultsClient struct {
 
 const resultsKeyPrefix = "result:"
 
+// NewRedisResultsClient returns a ResultsClient that reads the result:<app id> lists from the Redis at redisUrl.
 func NewRedisResultsClient(redisUrl string) core.ResultsClient {
 	return &redisResultsClient{
 		RedisUrl: redisUrl,
