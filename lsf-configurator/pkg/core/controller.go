@@ -19,6 +19,7 @@ const (
 	reuseDeployments        = true
 	unboostQuietPeriod      = 60 * time.Second // adaptive prewarm: scale the standby back after this long below the threshold
 	rateScaleDownHold       = 60 * time.Second // rate following: scale-down hold until the pod startup time is measured
+	idleDowngradeStep       = 20               // downgrade counter step of a tick without traffic (a low-latency tick counts 1)
 )
 
 type MetricType string
@@ -163,7 +164,6 @@ func (c *latencyController) tick() {
 	for appId, runtime := range runtimes {
 		handledApps[appId] = true
 		c.controlApp(appId, runtime, traceCounts[appId])
-
 	}
 
 	// Handle apps with no reported runtimes (possible downgrade)
@@ -173,46 +173,8 @@ func (c *latencyController) tick() {
 		return
 	}
 	for _, app := range apps {
-		if handledApps[app.Id] {
-			continue
-		}
-		if app.LatencyLimit <= 0 {
-			continue
-		}
-		// Adaptive prewarm: without traffic the rate is low, so a boosted standby is scaled back after the quiet period
-		if c.prewarmMode == "adaptive" {
-			c.adaptStandby(app, traceCounts[app.Id])
-		}
-
-		// Rate following: without traffic the rate is zero, so the warm pods go down to one after the hold time
-		c.arrivalRate(traceCounts[app.Id])
-
-		if app.ActiveLayoutKey == LayoutKeyMin {
-			continue
-		}
-		if c.inCooldown(app.Id) {
-			continue
-		}
-
-		// Increment downgrade counter for apps with no runtime, use a higher increment to trigger faster downgrade
-		count := c.addDowngradeCount(app.Id, 20)
-
-		if count < minConsecutiveDowngrade {
-			// log.Printf("App %s has no runtime (%d/%d consecutive intervals)", app.Id, count, minConsecutiveDowngrade)
-			continue
-		}
-
-		c.resetDowngradeCount(app.Id)
-
-		log.Printf("No runtime reported for app %s for %d consecutive intervals, downgrading to minimal layout.", app.Id, count)
-		nextLayoutKey, err := c.handleLayoutChange(app, layoutDowngradePath, false)
-		if err != nil {
-			log.Printf("Error downgrading app %s to minimal layout: %v", app.Id, err)
-			continue
-		}
-		if nextLayoutKey != "" {
-			log.Printf("App %s transitioned to layout %s due to missing runtimes. Deploying...", app.Id, nextLayoutKey)
-			c.markReconfigured(app.Id)
+		if !handledApps[app.Id] {
+			c.controlIdleApp(app, traceCounts[app.Id])
 		}
 	}
 }
@@ -308,6 +270,41 @@ func (c *latencyController) applyReconfig(app *FunctionApp, handler func(*Functi
 	log.Printf("App %s transitioned to layout %s. Deploying...", app.Id, nextLayoutKey)
 	c.markReconfigured(app.Id)
 	log.Printf("Reconfiguration in progress for app %s, applying cooldown period", app.Id)
+}
+
+// controlIdleApp handles an app without traffic in the metric window: its standby and warm pods follow the zero
+// rate, and after enough ticks without traffic it is downgraded by one layout
+func (c *latencyController) controlIdleApp(app *FunctionApp, traceCount int) {
+	if app.LatencyLimit <= 0 {
+		return
+	}
+	// Adaptive prewarm: without traffic the rate is low, so a boosted standby is scaled back after the quiet period
+	if c.prewarmMode == "adaptive" {
+		c.adaptStandby(app, traceCount)
+	}
+	// Rate following: without traffic the rate is zero, so the warm pods go down to one after the hold time
+	c.followRate(app, c.arrivalRate(traceCount))
+
+	if app.ActiveLayoutKey == LayoutKeyMin || c.inCooldown(app.Id) {
+		return
+	}
+	// A tick without traffic raises the downgrade counter faster than a low-latency tick
+	count := c.addDowngradeCount(app.Id, idleDowngradeStep)
+	if count < minConsecutiveDowngrade {
+		return
+	}
+	c.resetDowngradeCount(app.Id)
+
+	log.Printf("No runtime reported for app %s for %d consecutive intervals, downgrading to minimal layout.", app.Id, count)
+	nextLayoutKey, err := c.handleLayoutChange(app, layoutDowngradePath, false)
+	if err != nil {
+		log.Printf("Error downgrading app %s to minimal layout: %v", app.Id, err)
+		return
+	}
+	if nextLayoutKey != "" {
+		log.Printf("App %s transitioned to layout %s due to missing runtimes. Deploying...", app.Id, nextLayoutKey)
+		c.markReconfigured(app.Id)
+	}
 }
 
 // refreshComponentRuntimes updates the measured component runtimes of the capacity model from the
