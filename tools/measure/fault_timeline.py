@@ -8,9 +8,10 @@ bin_s = float(sys.argv[2]) if len(sys.argv) > 2 else 10.0
 fault_s = float(sys.argv[3]) if len(sys.argv) > 3 else None
 
 rows = list(csv.DictReader(open(f"{run_dir}/loadgen.csv")))
+t0 = min(float(r["t_send"]) for r in rows)
 bins = defaultdict(list)
 for r in rows:
-    bins[int(float(r["t_send"]) // bin_s)].append(r)
+    bins[int((float(r["t_send"]) - t0) // bin_s)].append(r)
 
 print("statuses:", dict(Counter(r["status"] for r in rows)))
 print(f"{'t(s)':>8} {'sent':>5} {'fail':>5} {'p95ms':>6} {'maxms':>6}")
