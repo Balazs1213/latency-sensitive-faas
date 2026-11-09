@@ -134,28 +134,9 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 
 func (c *latencyController) Start(ctx context.Context) error {
 	log.Println("Latency Controller started")
-	// Prewarm: bring up the inactive layouts of the already registered apps
-	if c.prewarmMode != "off" {
-		if apps, err := c.composer.functionAppRepo.GetAll(); err == nil {
-			for _, app := range apps {
-				if app.LatencyLimit > 0 && len(app.LayoutCandidates) > 1 {
-					go c.ensureStandbyLayouts(app)
-				}
-			}
-		}
-	}
-	// Prewarm off: remove standby deployments left over from an earlier prewarm mode,
-	// so that a switch starts from cold pods as in the original framework
-	if c.prewarmMode == "off" {
-		if apps, err := c.composer.functionAppRepo.GetAll(); err == nil {
-			for _, app := range apps {
-				go c.removeInactiveDeployments(app.Id)
-			}
-		}
-	}
+	c.initLayouts()
 	ticker := time.NewTicker(c.delay)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -332,6 +313,24 @@ func (c *latencyController) Start(ctx context.Context) error {
 					c.markReconfigured(app.Id)
 				}
 			}
+		}
+	}
+}
+
+// initLayouts prepares the layouts of the already registered apps at start-up: with prewarming it brings up
+// their inactive layouts, with prewarm off it removes the standby deployments left over from an earlier
+// prewarm mode, so that a switch starts from cold pods as in the original framework
+func (c *latencyController) initLayouts() {
+	apps, err := c.composer.functionAppRepo.GetAll()
+	if err != nil {
+		log.Printf("Error retrieving function apps for the layout preparation: %v", err)
+		return
+	}
+	for _, app := range apps {
+		if c.prewarmMode == "off" {
+			go c.removeInactiveDeployments(app.Id)
+		} else if app.LatencyLimit > 0 && len(app.LayoutCandidates) > 1 {
+			go c.ensureStandbyLayouts(app)
 		}
 	}
 }
