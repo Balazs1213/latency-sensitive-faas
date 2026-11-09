@@ -251,7 +251,7 @@ func (c *latencyController) reuseDeployment(appId, node string, dep *Deployment,
 	log.Printf("Reusing existing deployment %s for node %s", dep.Id, node)
 	logPhase(appId, "deployment_reused", "", dep.Id, 0)
 	followsRate := c.prewarmMode == "follow" && !standby
-	if followsRate || !(isUpgrade || standby || c.prewarmMode != "off") {
+	if followsRate || (!isUpgrade && !standby && c.prewarmMode == "off") {
 		return
 	}
 	minScale := ci.RequiredReplicas
