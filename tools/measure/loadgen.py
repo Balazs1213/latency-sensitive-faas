@@ -50,7 +50,6 @@ def main():
     p.add_argument("--template", default=os.path.expanduser("~/event-detect.json"))
     p.add_argument("--run-id", default=datetime.now().strftime("run%H%M%S"))
     p.add_argument("--workers", type=int, default=64, help="concurrent requests in flight (open loop needs rate x latency)")
-    p.add_argument("--workers", type=int, default=64, help="concurrent requests in flight (open loop needs rate x latency)")
     p.add_argument("--out", required=True, help="output directory of the run")
     args = p.parse_args()
 
