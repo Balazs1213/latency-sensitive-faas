@@ -162,93 +162,8 @@ func (c *latencyController) tick() {
 	handledApps := make(map[string]bool)
 	for appId, runtime := range runtimes {
 		handledApps[appId] = true
-		// log.Printf("App %s metrics with runtime agg func %s: %.0f ms", appId, c.aggMetricType, runtime)
-		app, err := c.composer.GetFunctionApp(appId)
-		if err != nil {
-			log.Printf("Error retrieving function app %s: %v", appId, err)
-			continue
-		}
-		if app == nil {
-			log.Printf("Found traces for app %s, but app is not registered in the database. Skipping", appId)
-			continue
-		}
+		c.controlApp(appId, runtime, traceCounts[appId])
 
-		if app.LatencyLimit <= 0 {
-			continue
-		}
-
-		// Phase marker: the controller sees the latency above the limit (logged on every such tick)
-		if runtime > float64(app.LatencyLimit) {
-			logPhase(app.Id, "violation_seen", app.ActiveLayoutKey, "", runtime)
-		}
-
-		// Adaptive prewarm: scale up the next layout's standby before the latency limit is reached
-		if c.prewarmMode == "adaptive" {
-			c.adaptStandby(app, traceCounts[appId])
-		}
-
-		// Rate following: keep the active layout's warm pods at what the measured rate needs
-		c.followRate(app, c.arrivalRate(traceCounts[appId]))
-
-		if c.inCooldown(app.Id) {
-			continue
-		}
-
-		// Determine action: proactively on the arrival rate, otherwise on the latency
-		var handler func(*FunctionApp) (string, error)
-		rate := c.arrivalRate(traceCounts[appId])
-		rateUpgrade := layoutUpgradePath[app.ActiveLayoutKey] != "" && c.rateAboveCapacity(app, app.ActiveLayoutKey, rate)
-		if rateUpgrade && c.upgradeReady(app, rate) {
-			// Proactive upgrade: the active layout reached the rate it was sized for
-			logPhase(app.Id, "rate_trigger", app.ActiveLayoutKey, "", rate)
-			handler = c.handleLatencyViolation
-			c.resetDowngradeCount(app.Id)
-		} else if runtime > float64(app.LatencyLimit) {
-			// Check trace count for upgrades to avoid reconfigurations based on insufficient data
-			count, ok := traceCounts[appId]
-			if !ok || count < minimalTraceCount {
-				// log.Printf("Skipping app %s reconfiguration due to insufficient trace count (%d < %d)", appId, count, minimalTraceCount)
-				continue
-			}
-			handler = c.handleLatencyViolation
-			// Reset downgrade counter on upgrade
-			c.resetDowngradeCount(app.Id)
-		} else if c.prewarmMode == "follow" && c.switchRateFactor > 0 {
-			// Follow mode: switch back on the arrival rate after the ski rental hold, not on a low latency
-			if rateUpgrade || !c.rateDowngradeDue(app, rate) {
-				continue
-			}
-			handler = c.handleLayoutDowngrade
-		} else if !rateUpgrade && runtime < float64(app.LatencyLimit)*c.latencyDowngradeFactor &&
-			!c.rateAboveCapacity(app, layoutDowngradePath[app.ActiveLayoutKey], rate) {
-			// With proactive switching, never downgrade to a layout that the current rate would overload
-			// Oscillation defense for downgrade: track consecutive intervals
-			count := c.addDowngradeCount(app.Id, 1)
-			if count < minConsecutiveDowngrade {
-				// log.Printf("App %s eligible for downgrade (%d/%d consecutive intervals)", app.Id, count, minConsecutiveDowngrade)
-				continue
-			}
-			handler = c.handleLayoutDowngrade
-		} else {
-			// Reset counter if not eligible for downgrade
-			c.resetDowngradeCount(app.Id)
-			continue
-		}
-
-		nextLayoutKey, err := handler(app)
-		if err != nil {
-			log.Printf("Error handling reconfiguration for app %s: %v", app.Id, err)
-			continue
-		}
-		if nextLayoutKey == "" {
-			//log.Printf("No further layout candidates available for app %s. Skipping reconfiguration.", app.Id)
-			continue
-		} else {
-			log.Printf("App %s transitioned to layout %s. Deploying...", app.Id, nextLayoutKey)
-		}
-		c.markReconfigured(app.Id)
-
-		log.Printf("Reconfiguration in progress for app %s, applying cooldown period", app.Id)
 	}
 
 	// Handle apps with no reported runtimes (possible downgrade)
@@ -300,6 +215,99 @@ func (c *latencyController) tick() {
 			c.markReconfigured(app.Id)
 		}
 	}
+}
+
+// controlApp decides on the reconfiguration of an app with traffic in the metric window
+func (c *latencyController) controlApp(appId string, runtime float64, traceCount int) {
+	app, err := c.composer.GetFunctionApp(appId)
+	if err != nil {
+		log.Printf("Error retrieving function app %s: %v", appId, err)
+		return
+	}
+	if app == nil {
+		log.Printf("Found traces for app %s, but app is not registered in the database. Skipping", appId)
+		return
+	}
+	if app.LatencyLimit <= 0 {
+		return
+	}
+
+	// Phase marker: the controller sees the latency above the limit (logged on every such tick)
+	if runtime > float64(app.LatencyLimit) {
+		logPhase(app.Id, "violation_seen", app.ActiveLayoutKey, "", runtime)
+	}
+	// Adaptive prewarm: scale up the next layout's standby before the latency limit is reached
+	if c.prewarmMode == "adaptive" {
+		c.adaptStandby(app, traceCount)
+	}
+	// Rate following: keep the active layout's warm pods at what the measured rate needs
+	rate := c.arrivalRate(traceCount)
+	c.followRate(app, rate)
+
+	if c.inCooldown(app.Id) {
+		return
+	}
+	handler := c.chooseAction(app, runtime, traceCount, rate)
+	if handler == nil {
+		return
+	}
+	c.applyReconfig(app, handler)
+}
+
+// chooseAction picks the reconfiguration of an app with traffic, or returns nil when the app stays on its layout.
+// In order: a proactive upgrade when the rate reaches the active layout's capacity, an upgrade on a latency above
+// the limit, then a downgrade, either on the rate (follow mode) or after enough consecutive ticks with a low latency.
+func (c *latencyController) chooseAction(app *FunctionApp, runtime float64, traceCount int, rate float64) func(*FunctionApp) (string, error) {
+	rateUpgrade := layoutUpgradePath[app.ActiveLayoutKey] != "" && c.rateAboveCapacity(app, app.ActiveLayoutKey, rate)
+	if rateUpgrade && c.upgradeReady(app, rate) {
+		// Proactive upgrade: the active layout reached the rate it was sized for
+		logPhase(app.Id, "rate_trigger", app.ActiveLayoutKey, "", rate)
+		c.resetDowngradeCount(app.Id)
+		return c.handleLatencyViolation
+	}
+	if runtime > float64(app.LatencyLimit) {
+		// Upgrade on the latency, but only with enough traces, to avoid reconfigurations on insufficient data
+		if traceCount < minimalTraceCount {
+			return nil
+		}
+		c.resetDowngradeCount(app.Id)
+		return c.handleLatencyViolation
+	}
+	if c.prewarmMode == "follow" && c.switchRateFactor > 0 {
+		// Follow mode: switch back on the arrival rate after the ski rental hold, not on a low latency
+		if rateUpgrade || !c.rateDowngradeDue(app, rate) {
+			return nil
+		}
+		return c.handleLayoutDowngrade
+	}
+	if !rateUpgrade && runtime < float64(app.LatencyLimit)*c.latencyDowngradeFactor &&
+		!c.rateAboveCapacity(app, layoutDowngradePath[app.ActiveLayoutKey], rate) {
+		// With proactive switching, never downgrade to a layout that the current rate would overload.
+		// Oscillation defense: downgrade only after enough consecutive eligible ticks
+		if c.addDowngradeCount(app.Id, 1) < minConsecutiveDowngrade {
+			return nil
+		}
+		return c.handleLayoutDowngrade
+	}
+	// Not eligible for a downgrade: reset the counter
+	c.resetDowngradeCount(app.Id)
+	return nil
+}
+
+// applyReconfig runs the chosen reconfiguration of the app and starts its cooldown period when the layout changed
+func (c *latencyController) applyReconfig(app *FunctionApp, handler func(*FunctionApp) (string, error)) {
+	nextLayoutKey, err := handler(app)
+	if err != nil {
+		log.Printf("Error handling reconfiguration for app %s: %v", app.Id, err)
+		return
+	}
+	if nextLayoutKey == "" {
+		// No further layout candidate in this direction
+		return
+	}
+	log.Printf("App %s transitioned to layout %s. Deploying...", app.Id, nextLayoutKey)
+	c.markReconfigured(app.Id)
+	log.Printf("Reconfiguration in progress for app %s, applying cooldown period", app.Id)
 }
 
 // refreshComponentRuntimes updates the measured component runtimes of the capacity model from the
