@@ -49,6 +49,7 @@ def main():
     p.add_argument("--frames", default="tools/tracker-proto/frames")
     p.add_argument("--template", default=os.path.expanduser("~/event-detect.json"))
     p.add_argument("--run-id", default=datetime.now().strftime("run%H%M%S"))
+    p.add_argument("--workers", type=int, default=64, help="concurrent requests in flight (open loop needs rate x latency)")
     p.add_argument("--out", required=True, help="output directory of the run")
     args = p.parse_args()
 
@@ -83,7 +84,7 @@ def main():
 
     print(f"{args.run_id}: {len(times)} requests over {times[-1]:.0f} s, {args.cameras} cameras")
     start = time.time()
-    with ThreadPoolExecutor(max_workers=64) as pool:
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for seq, offset in enumerate(times):
             delay = start + offset - time.time()
             if delay > 0:
