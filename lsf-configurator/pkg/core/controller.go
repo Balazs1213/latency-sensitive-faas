@@ -143,178 +143,196 @@ func (c *latencyController) Start(ctx context.Context) error {
 			log.Println("Latency Controller received cancellation signal")
 			return nil
 		case <-ticker.C:
-			runtimes, traceCounts, err := c.metricQueryFunc(c.metricQueryTimeRange)
-			if err != nil {
-				log.Printf("Error querying app runtime metrics: %v", err)
-				continue
-			}
-			// Measured capacity: the components' average runtimes in the same metric window
-			if c.measuredCapacity {
-				if measured, err := c.metrics.QueryComponentRuntimes(c.metricQueryTimeRange); err != nil {
-					log.Printf("Error querying component runtimes: %v", err)
-				} else {
-					c.componentRuntimes = measured
-				}
-			}
-			// Log runtimes at defined intervals
-			now := time.Now()
-			if now.Sub(c.lastLogTime) >= logInterval {
-				if len(runtimes) > 0 {
-					var runtimeStrings []string
-					for appID, rt := range runtimes {
-						runtimeStrings = append(runtimeStrings, fmt.Sprintf("%s: %.0fms", appID, rt))
-					}
-					sort.Strings(runtimeStrings)
-					log.Printf("Current app runtimes (%s): [%s]", c.aggMetricType, strings.Join(runtimeStrings, ", "))
-				} else {
-					log.Printf("No app runtimes reported in this interval.")
-				}
-				c.lastLogTime = now
-			}
-
-			handledApps := make(map[string]bool)
-			for appId, runtime := range runtimes {
-				handledApps[appId] = true
-				// log.Printf("App %s metrics with runtime agg func %s: %.0f ms", appId, c.aggMetricType, runtime)
-				app, err := c.composer.GetFunctionApp(appId)
-				if err != nil {
-					log.Printf("Error retrieving function app %s: %v", appId, err)
-					continue
-				}
-				if app == nil {
-					log.Printf("Found traces for app %s, but app is not registered in the database. Skipping", appId)
-					continue
-				}
-
-				if app.LatencyLimit <= 0 {
-					continue
-				}
-
-				// Phase marker: the controller sees the latency above the limit (logged on every such tick)
-				if runtime > float64(app.LatencyLimit) {
-					logPhase(app.Id, "violation_seen", app.ActiveLayoutKey, "", runtime)
-				}
-
-				// Adaptive prewarm: scale up the next layout's standby before the latency limit is reached
-				if c.prewarmMode == "adaptive" {
-					c.adaptStandby(app, traceCounts[appId])
-				}
-
-				// Rate following: keep the active layout's warm pods at what the measured rate needs
-				c.followRate(app, c.arrivalRate(traceCounts[appId]))
-
-				if c.inCooldown(app.Id) {
-					continue
-				}
-
-				// Determine action: proactively on the arrival rate, otherwise on the latency
-				var handler func(*FunctionApp) (string, error)
-				rate := c.arrivalRate(traceCounts[appId])
-				rateUpgrade := layoutUpgradePath[app.ActiveLayoutKey] != "" && c.rateAboveCapacity(app, app.ActiveLayoutKey, rate)
-				if rateUpgrade && c.upgradeReady(app, rate) {
-					// Proactive upgrade: the active layout reached the rate it was sized for
-					logPhase(app.Id, "rate_trigger", app.ActiveLayoutKey, "", rate)
-					handler = c.handleLatencyViolation
-					c.resetDowngradeCount(app.Id)
-				} else if runtime > float64(app.LatencyLimit) {
-					// Check trace count for upgrades to avoid reconfigurations based on insufficient data
-					count, ok := traceCounts[appId]
-					if !ok || count < minimalTraceCount {
-						// log.Printf("Skipping app %s reconfiguration due to insufficient trace count (%d < %d)", appId, count, minimalTraceCount)
-						continue
-					}
-					handler = c.handleLatencyViolation
-					// Reset downgrade counter on upgrade
-					c.resetDowngradeCount(app.Id)
-				} else if c.prewarmMode == "follow" && c.switchRateFactor > 0 {
-					// Follow mode: switch back on the arrival rate after the ski rental hold, not on a low latency
-					if rateUpgrade || !c.rateDowngradeDue(app, rate) {
-						continue
-					}
-					handler = c.handleLayoutDowngrade
-				} else if !rateUpgrade && runtime < float64(app.LatencyLimit)*c.latencyDowngradeFactor &&
-					!c.rateAboveCapacity(app, layoutDowngradePath[app.ActiveLayoutKey], rate) {
-					// With proactive switching, never downgrade to a layout that the current rate would overload
-					// Oscillation defense for downgrade: track consecutive intervals
-					count := c.addDowngradeCount(app.Id, 1)
-					if count < minConsecutiveDowngrade {
-						// log.Printf("App %s eligible for downgrade (%d/%d consecutive intervals)", app.Id, count, minConsecutiveDowngrade)
-						continue
-					}
-					handler = c.handleLayoutDowngrade
-				} else {
-					// Reset counter if not eligible for downgrade
-					c.resetDowngradeCount(app.Id)
-					continue
-				}
-
-				nextLayoutKey, err := handler(app)
-				if err != nil {
-					log.Printf("Error handling reconfiguration for app %s: %v", app.Id, err)
-					continue
-				}
-				if nextLayoutKey == "" {
-					//log.Printf("No further layout candidates available for app %s. Skipping reconfiguration.", app.Id)
-					continue
-				} else {
-					log.Printf("App %s transitioned to layout %s. Deploying...", app.Id, nextLayoutKey)
-				}
-				c.markReconfigured(app.Id)
-
-				log.Printf("Reconfiguration in progress for app %s, applying cooldown period", app.Id)
-			}
-
-			// Handle apps with no reported runtimes (possible downgrade)
-			apps, err := c.composer.functionAppRepo.GetAll()
-			if err != nil {
-				log.Printf("Error retrieving all function apps: %v", err)
-				continue
-			}
-			for _, app := range apps {
-				if handledApps[app.Id] {
-					continue
-				}
-				if app.LatencyLimit <= 0 {
-					continue
-				}
-				// Adaptive prewarm: without traffic the rate is low, so a boosted standby is scaled back after the quiet period
-				if c.prewarmMode == "adaptive" {
-					c.adaptStandby(app, traceCounts[app.Id])
-				}
-
-				// Rate following: without traffic the rate is zero, so the warm pods go down to one after the hold time
-				c.arrivalRate(traceCounts[app.Id])
-
-				if app.ActiveLayoutKey == LayoutKeyMin {
-					continue
-				}
-				if c.inCooldown(app.Id) {
-					continue
-				}
-
-				// Increment downgrade counter for apps with no runtime, use a higher increment to trigger faster downgrade
-				count := c.addDowngradeCount(app.Id, 20)
-
-				if count < minConsecutiveDowngrade {
-					// log.Printf("App %s has no runtime (%d/%d consecutive intervals)", app.Id, count, minConsecutiveDowngrade)
-					continue
-				}
-
-				c.resetDowngradeCount(app.Id)
-
-				log.Printf("No runtime reported for app %s for %d consecutive intervals, downgrading to minimal layout.", app.Id, count)
-				nextLayoutKey, err := c.handleLayoutChange(app, layoutDowngradePath, false)
-				if err != nil {
-					log.Printf("Error downgrading app %s to minimal layout: %v", app.Id, err)
-					continue
-				}
-				if nextLayoutKey != "" {
-					log.Printf("App %s transitioned to layout %s due to missing runtimes. Deploying...", app.Id, nextLayoutKey)
-					c.markReconfigured(app.Id)
-				}
-			}
+			c.tick()
 		}
 	}
+}
+
+// tick runs one control interval: it queries the app latencies and trace counts of the metric window,
+// then decides on a reconfiguration for every app with traffic and for every app without traffic
+func (c *latencyController) tick() {
+	runtimes, traceCounts, err := c.metricQueryFunc(c.metricQueryTimeRange)
+	if err != nil {
+		log.Printf("Error querying app runtime metrics: %v", err)
+		return
+	}
+	c.refreshComponentRuntimes()
+	c.logRuntimes(runtimes)
+
+	handledApps := make(map[string]bool)
+	for appId, runtime := range runtimes {
+		handledApps[appId] = true
+		// log.Printf("App %s metrics with runtime agg func %s: %.0f ms", appId, c.aggMetricType, runtime)
+		app, err := c.composer.GetFunctionApp(appId)
+		if err != nil {
+			log.Printf("Error retrieving function app %s: %v", appId, err)
+			continue
+		}
+		if app == nil {
+			log.Printf("Found traces for app %s, but app is not registered in the database. Skipping", appId)
+			continue
+		}
+
+		if app.LatencyLimit <= 0 {
+			continue
+		}
+
+		// Phase marker: the controller sees the latency above the limit (logged on every such tick)
+		if runtime > float64(app.LatencyLimit) {
+			logPhase(app.Id, "violation_seen", app.ActiveLayoutKey, "", runtime)
+		}
+
+		// Adaptive prewarm: scale up the next layout's standby before the latency limit is reached
+		if c.prewarmMode == "adaptive" {
+			c.adaptStandby(app, traceCounts[appId])
+		}
+
+		// Rate following: keep the active layout's warm pods at what the measured rate needs
+		c.followRate(app, c.arrivalRate(traceCounts[appId]))
+
+		if c.inCooldown(app.Id) {
+			continue
+		}
+
+		// Determine action: proactively on the arrival rate, otherwise on the latency
+		var handler func(*FunctionApp) (string, error)
+		rate := c.arrivalRate(traceCounts[appId])
+		rateUpgrade := layoutUpgradePath[app.ActiveLayoutKey] != "" && c.rateAboveCapacity(app, app.ActiveLayoutKey, rate)
+		if rateUpgrade && c.upgradeReady(app, rate) {
+			// Proactive upgrade: the active layout reached the rate it was sized for
+			logPhase(app.Id, "rate_trigger", app.ActiveLayoutKey, "", rate)
+			handler = c.handleLatencyViolation
+			c.resetDowngradeCount(app.Id)
+		} else if runtime > float64(app.LatencyLimit) {
+			// Check trace count for upgrades to avoid reconfigurations based on insufficient data
+			count, ok := traceCounts[appId]
+			if !ok || count < minimalTraceCount {
+				// log.Printf("Skipping app %s reconfiguration due to insufficient trace count (%d < %d)", appId, count, minimalTraceCount)
+				continue
+			}
+			handler = c.handleLatencyViolation
+			// Reset downgrade counter on upgrade
+			c.resetDowngradeCount(app.Id)
+		} else if c.prewarmMode == "follow" && c.switchRateFactor > 0 {
+			// Follow mode: switch back on the arrival rate after the ski rental hold, not on a low latency
+			if rateUpgrade || !c.rateDowngradeDue(app, rate) {
+				continue
+			}
+			handler = c.handleLayoutDowngrade
+		} else if !rateUpgrade && runtime < float64(app.LatencyLimit)*c.latencyDowngradeFactor &&
+			!c.rateAboveCapacity(app, layoutDowngradePath[app.ActiveLayoutKey], rate) {
+			// With proactive switching, never downgrade to a layout that the current rate would overload
+			// Oscillation defense for downgrade: track consecutive intervals
+			count := c.addDowngradeCount(app.Id, 1)
+			if count < minConsecutiveDowngrade {
+				// log.Printf("App %s eligible for downgrade (%d/%d consecutive intervals)", app.Id, count, minConsecutiveDowngrade)
+				continue
+			}
+			handler = c.handleLayoutDowngrade
+		} else {
+			// Reset counter if not eligible for downgrade
+			c.resetDowngradeCount(app.Id)
+			continue
+		}
+
+		nextLayoutKey, err := handler(app)
+		if err != nil {
+			log.Printf("Error handling reconfiguration for app %s: %v", app.Id, err)
+			continue
+		}
+		if nextLayoutKey == "" {
+			//log.Printf("No further layout candidates available for app %s. Skipping reconfiguration.", app.Id)
+			continue
+		} else {
+			log.Printf("App %s transitioned to layout %s. Deploying...", app.Id, nextLayoutKey)
+		}
+		c.markReconfigured(app.Id)
+
+		log.Printf("Reconfiguration in progress for app %s, applying cooldown period", app.Id)
+	}
+
+	// Handle apps with no reported runtimes (possible downgrade)
+	apps, err := c.composer.functionAppRepo.GetAll()
+	if err != nil {
+		log.Printf("Error retrieving all function apps: %v", err)
+		return
+	}
+	for _, app := range apps {
+		if handledApps[app.Id] {
+			continue
+		}
+		if app.LatencyLimit <= 0 {
+			continue
+		}
+		// Adaptive prewarm: without traffic the rate is low, so a boosted standby is scaled back after the quiet period
+		if c.prewarmMode == "adaptive" {
+			c.adaptStandby(app, traceCounts[app.Id])
+		}
+
+		// Rate following: without traffic the rate is zero, so the warm pods go down to one after the hold time
+		c.arrivalRate(traceCounts[app.Id])
+
+		if app.ActiveLayoutKey == LayoutKeyMin {
+			continue
+		}
+		if c.inCooldown(app.Id) {
+			continue
+		}
+
+		// Increment downgrade counter for apps with no runtime, use a higher increment to trigger faster downgrade
+		count := c.addDowngradeCount(app.Id, 20)
+
+		if count < minConsecutiveDowngrade {
+			// log.Printf("App %s has no runtime (%d/%d consecutive intervals)", app.Id, count, minConsecutiveDowngrade)
+			continue
+		}
+
+		c.resetDowngradeCount(app.Id)
+
+		log.Printf("No runtime reported for app %s for %d consecutive intervals, downgrading to minimal layout.", app.Id, count)
+		nextLayoutKey, err := c.handleLayoutChange(app, layoutDowngradePath, false)
+		if err != nil {
+			log.Printf("Error downgrading app %s to minimal layout: %v", app.Id, err)
+			continue
+		}
+		if nextLayoutKey != "" {
+			log.Printf("App %s transitioned to layout %s due to missing runtimes. Deploying...", app.Id, nextLayoutKey)
+			c.markReconfigured(app.Id)
+		}
+	}
+}
+
+// refreshComponentRuntimes updates the measured component runtimes of the capacity model from the
+// same metric window (measured capacity only)
+func (c *latencyController) refreshComponentRuntimes() {
+	if !c.measuredCapacity {
+		return
+	}
+	measured, err := c.metrics.QueryComponentRuntimes(c.metricQueryTimeRange)
+	if err != nil {
+		log.Printf("Error querying component runtimes: %v", err)
+		return
+	}
+	c.componentRuntimes = measured
+}
+
+// logRuntimes logs the latencies of the apps once every logInterval
+func (c *latencyController) logRuntimes(runtimes map[string]float64) {
+	now := time.Now()
+	if now.Sub(c.lastLogTime) < logInterval {
+		return
+	}
+	if len(runtimes) > 0 {
+		var runtimeStrings []string
+		for appID, rt := range runtimes {
+			runtimeStrings = append(runtimeStrings, fmt.Sprintf("%s: %.0fms", appID, rt))
+		}
+		sort.Strings(runtimeStrings)
+		log.Printf("Current app runtimes (%s): [%s]", c.aggMetricType, strings.Join(runtimeStrings, ", "))
+	} else {
+		log.Printf("No app runtimes reported in this interval.")
+	}
+	c.lastLogTime = now
 }
 
 // initLayouts prepares the layouts of the already registered apps at start-up: with prewarming it brings up
