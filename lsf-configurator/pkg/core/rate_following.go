@@ -29,20 +29,31 @@ func (c *latencyController) followRate(app *FunctionApp, rate float64) {
 
 	// Rate forecast: size the pods for the rate expected when a pod requested now becomes ready
 	sizingRate := c.forecastRate(app.Id, rate, now)
+	targets := c.rateTargets(app, sizingRate)
 
-	// Target pods per composition; a composition shared by two layouts gets the larger target
-	type target struct {
-		ci   CompositionInfo
-		node string
-		need int
+	st := c.rateFollowState(app.Id)
+	if st.activeKey != app.ActiveLayoutKey {
+		st.activate(app, now)
 	}
-	targets := make(map[string]*target)
+	for key, t := range targets {
+		c.followTarget(app, st, key, t, rate, sizingRate, now)
+	}
+}
+
+// rateTarget is the number of pods a layout composition on a node needs
+type rateTarget struct {
+	ci   CompositionInfo
+	node string
+	need int
+}
+
+// rateTargets returns the pods every layout composition of the app needs ("components@node" -> target): the
+// active layout and the next larger layout follow the rate, every other layout waits with one pod. A composition
+// shared by two layouts gets the larger target.
+func (c *latencyController) rateTargets(app *FunctionApp, sizingRate float64) map[string]*rateTarget {
+	targets := make(map[string]*rateTarget)
 	for layoutKey, layout := range app.LayoutCandidates {
-		followed := layoutKey == app.ActiveLayoutKey ||
-			(c.prewarmMode == "follow" && layoutKey == layoutUpgradePath[app.ActiveLayoutKey])
-		if !followed && c.prewarmMode != "follow" {
-			continue // the other modes manage their standby layouts themselves
-		}
+		followed := layoutKey == app.ActiveLayoutKey || layoutKey == layoutUpgradePath[app.ActiveLayoutKey]
 		for node, ci := range layout {
 			need := 1
 			if followed {
@@ -50,55 +61,67 @@ func (c *latencyController) followRate(app *FunctionApp, rate float64) {
 			}
 			key := compositionKey(ci) + "@" + node
 			if t, ok := targets[key]; !ok || need > t.need {
-				targets[key] = &target{ci: ci, node: node, need: need}
+				targets[key] = &rateTarget{ci: ci, node: node, need: need}
 			}
 		}
 	}
+	return targets
+}
 
-	st := c.rateFollows[app.Id]
+// rateFollowState returns the rate-following state of the app, created on first use
+func (c *latencyController) rateFollowState(appId string) *rateFollow {
+	st := c.rateFollows[appId]
 	if st == nil {
 		st = &rateFollow{pods: make(map[string]int), lastNeeded: make(map[string]time.Time)}
-		c.rateFollows[app.Id] = st
+		c.rateFollows[appId] = st
 	}
-	// A newly active layout starts with all its planned replicas warm, except in follow mode,
-	// where its pods already follow the rate and keep their current value
-	if st.activeKey != app.ActiveLayoutKey {
-		for node, ci := range app.LayoutCandidates[app.ActiveLayoutKey] {
-			key := compositionKey(ci) + "@" + node
-			if _, seen := st.pods[key]; !seen || c.prewarmMode != "follow" {
-				st.pods[key] = ci.RequiredReplicas
-				st.lastNeeded[key] = now
-			}
+	return st
+}
+
+// activate records a newly active layout: a composition not followed yet starts with all its planned replicas
+// warm, the others keep their current pods, which already follow the rate
+func (st *rateFollow) activate(app *FunctionApp, now time.Time) {
+	for node, ci := range app.LayoutCandidates[app.ActiveLayoutKey] {
+		key := compositionKey(ci) + "@" + node
+		if _, seen := st.pods[key]; !seen {
+			st.pods[key] = ci.RequiredReplicas
+			st.lastNeeded[key] = now
 		}
-		st.activeKey = app.ActiveLayoutKey
+	}
+	st.activeKey = app.ActiveLayoutKey
+}
+
+// followTarget moves the min-scale of one layout composition to its target: raised at once, lowered only after
+// the rate has needed fewer pods for the scale-down hold
+func (c *latencyController) followTarget(app *FunctionApp, st *rateFollow, key string, t *rateTarget, rate, sizingRate float64, now time.Time) {
+	current, seen := st.pods[key]
+	if !seen {
+		// A standby composition not seen yet: deployed with one warm pod
+		current = 1
+		st.pods[key] = current
+		st.lastNeeded[key] = now
+	}
+	if t.need >= current {
+		st.lastNeeded[key] = now
+	}
+	raise := t.need > current
+	lower := t.need < current && now.Sub(st.lastNeeded[key]) >= c.scaleDownHold()
+	if !raise && !lower {
+		return
 	}
 
-	for key, t := range targets {
-		current, seen := st.pods[key]
-		if !seen {
-			// A standby composition not seen yet: deployed with one warm pod
-			current = 1
-			st.pods[key] = current
-			st.lastNeeded[key] = now
-		}
-		if t.need >= current {
-			st.lastNeeded[key] = now
-		}
-		if t.need > current || (t.need < current && now.Sub(st.lastNeeded[key]) >= c.scaleDownHold()) {
-			st.pods[key] = t.need
-			log.Printf("Rate following %s: rate %.2f req/s (sized for %.2f), pod capacity %.2f req/s -> %d pods",
-				key, rate, sizingRate, c.podCapacity(app.Id, t.ci), t.need)
-			logPhase(app.Id, "rate_scale", app.ActiveLayoutKey, key, float64(t.need))
-			// Pod startup measurement: from raising the min-scale until its pods are ready
-			if t.need > current {
-				c.watchStartup(app, key, t.ci, t.node, t.need, now)
-			} else {
-				delete(c.startupPending[app.Id], key)
-			}
-			// Run in the background: patching the cluster must not delay the controller tick
-			go c.setCompositionMinScale(app.Id, t.ci, t.node, t.need)
-		}
+	st.pods[key] = t.need
+	log.Printf("Rate following %s: rate %.2f req/s (sized for %.2f), pod capacity %.2f req/s -> %d pods",
+		key, rate, sizingRate, c.podCapacity(app.Id, t.ci), t.need)
+	logPhase(app.Id, "rate_scale", app.ActiveLayoutKey, key, float64(t.need))
+	// Pod startup measurement: from raising the min-scale until its pods are ready
+	if raise {
+		c.watchStartup(app, key, t.ci, t.node, t.need, now)
+	} else {
+		delete(c.startupPending[app.Id], key)
 	}
+	// Run in the background: patching the cluster must not delay the controller tick
+	go c.setCompositionMinScale(app.Id, t.ci, t.node, t.need)
 }
 
 // setCompositionMinScale sets the min-scale of a layout composition's deployments on one node
