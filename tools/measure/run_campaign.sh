@@ -6,8 +6,11 @@
 #   DRY=1 bash tools/measure/run_campaign.sh        only the environment checks, no measurement
 #   ONLY="steps:follow-forecast:1" bash ...         one run (profile:config:rep), e.g. as a pilot
 #
-# Output: ~/thesis/measurements/thesis-final/<profile>/<config>/rep<N>/ ; a run with a DONE file is skipped,
-# so the campaign can simply be started again after an interruption.
+# Output: ~/thesis/measurements/thesis-final/
+#   <profile>/<config>/rep<N>/   one run (profile: ramp or steps); a run with a DONE file is skipped, so the
+#                                campaign can simply be started again after an interruption
+#   configs/<config>/            config.txt of the last switch to that configuration and the use_config.sh output
+#   campaign.log                 progress of the campaign; all-runs.csv: summary of every run (written at the end)
 # Order: within a repetition every configuration once (both profiles after one config switch), and the
 # configuration order is rotated in every repetition, so drifts of the machine do not hit only the last ones.
 
@@ -160,6 +163,11 @@ measure() {  # $1 profile name, $2 run directory, $3 run id
   [ -s "$D/traces.csv" ] && [ -s "$D/phases.csv" ]
 }
 
+switch_config() {  # applies a configuration; configs/<config>/ keeps its config.txt and the use_config output
+  mkdir -p "$ROOT/configs/$1"
+  apply_config "$1" "$ROOT/configs/$1" > "$ROOT/configs/$1/use_config.log" 2>&1
+}
+
 FAILS=0
 run_one() {  # $1 profile, $2 config, $3 rep; assumes the config is applied
   local D=$ROOT/$1/$2/rep$3
@@ -171,7 +179,7 @@ run_one() {  # $1 profile, $2 config, $3 rep; assumes the config is applied
   fi
   FAILS=0
   rm -rf "$D"; mkdir -p "$D"
-  cp "$ROOT/.config-$2.txt" "$D/config.txt" 2>/dev/null
+  cp "$ROOT/configs/$2/config.txt" "$D/config.txt" 2>/dev/null
   log "START $1/$2/rep$3"
   sleep "$SETTLE"
   if measure "$1" "$D" "final-$1-$2-r$3-$(date +%H%M)" > "$D/run_output.txt" 2>&1; then
@@ -198,8 +206,7 @@ fi
 if [ -n "$ONLY" ]; then
   IFS=: read -r p c r <<< "$ONLY"
   log "ONLY $p/$c/rep$r"
-  apply_config "$c" "$ROOT/.config-$c.txt.d" > "$ROOT/.config-$c.log" 2>&1
-  cp "$ROOT/.config-$c.txt.d/config.txt" "$ROOT/.config-$c.txt" 2>/dev/null
+  switch_config "$c"
   run_one "$p" "$c" "$r"
   exit 0
 fi
@@ -211,8 +218,7 @@ for rep in $(seq "$REPS"); do
     cfg=${CONFIGS[$(( (k + rep - 1) % n ))]}
     needs_config "$cfg" "$rep" || { log "skip $cfg/rep$rep (done)"; continue; }
     log "config $cfg (rep $rep)"
-    apply_config "$cfg" "$ROOT/.config-$cfg.txt.d" > "$ROOT/.config-$cfg.log" 2>&1
-    cp "$ROOT/.config-$cfg.txt.d/config.txt" "$ROOT/.config-$cfg.txt" 2>/dev/null
+    switch_config "$cfg"
     for prof in "${PROFILES[@]}"; do
       run_one "$prof" "$cfg" "$rep"
     done

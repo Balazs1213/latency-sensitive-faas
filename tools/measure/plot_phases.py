@@ -2,6 +2,7 @@
 
 Writes into the run directory:
   phases.csv                per phase: requests, late requests, percentiles, time above the limit, pods, switches
+  phases.txt                the main columns of phases.csv as a readable table
   plots/00-overview/        the whole run, phases shaded
   plots/00-all-phases/      all phases side by side, each zoomed to its own time range
   plots/NN-<phase>/         one phase, zoomed
@@ -120,24 +121,23 @@ def decorate(ax, d, lo, hi, phases):
             ax.axvline(begin, color="red", lw=1, alpha=0.7)
 
 
-def draw_latency(ax, d, lo, hi, limit, phases, ytop, show_names):
+def draw_latency(ax, d, lo, hi, limit, phases, show_names):
     m = (d["start"] >= lo) & (d["start"] <= hi)
-    over = d["lat"] > ytop
-    ax.scatter(d["start"][m & ~over], d["lat"][m & ~over], s=3, color="tab:red", alpha=0.5,
-               label="latency per request")
-    if np.any(m & over):  # clipped points drawn at the top edge
-        ax.scatter(d["start"][m & over], np.full((m & over).sum(), ytop * 0.98), s=8,
-                   marker="^", color="darkred", label=f"above {ytop / 1000:.1f} s")
+    ax.scatter(d["start"][m], d["lat"][m], s=3, color="tab:red", alpha=0.5, label="latency per request")
     grid, p95 = rolling_p95(d["start"], d["lat"], lo, hi)
     ax.plot(grid, p95, color="black", lw=1, label=f"rolling P95 ({P95_WINDOW_S} s)")
     if limit:
         ax.axhline(limit, color="black", ls="--", lw=0.8, label="latency limit")
+    # Every point and the P95 line of this window fit on the axis, with room for the labels on top
+    peaks = [2.5 * limit] + ([float(d["lat"][m].max())] if m.any() else []) + \
+        ([float(np.nanmax(p95))] if np.any(np.isfinite(p95)) else [])
+    ytop = max(peaks) * 1.12
     ax.set_ylim(0, ytop)
     decorate(ax, d, lo, hi, phases)
     for begin, dur, layout in d["bands"]:
         if lo <= begin <= hi:
             arrow = {"max_rate": "↑", "min_rate": "↓"}.get(layout, "")
-            ax.text(begin, ytop * 0.9, f"{arrow}{dur:.1f}s", color="red", fontsize=7, ha="center")
+            ax.text(begin, ytop * 0.93, f"{arrow}{dur:.1f}s", color="red", fontsize=7, ha="center")
     if show_names:
         for name, a, b in phases:
             if b > lo and a < hi:
@@ -169,9 +169,9 @@ ROWS = ("latency", "rate", "pods")
 YLABEL = {"latency": "latency (ms)", "rate": "requests/s", "pods": "ready pods"}
 
 
-def draw_row(row, ax, d, lo, hi, limit, phases, bin_s, ytop, show_names):
+def draw_row(row, ax, d, lo, hi, limit, phases, bin_s, show_names):
     if row == "latency":
-        draw_latency(ax, d, lo, hi, limit, phases, ytop, show_names)
+        draw_latency(ax, d, lo, hi, limit, phases, show_names)
     elif row == "rate":
         draw_rate(ax, d, lo, hi, phases, bin_s)
     else:
@@ -185,33 +185,37 @@ def save(fig, folder, name):
     plt.close(fig)
 
 
-def plot_window(folder, title, d, lo, hi, limit, phases, bin_s, ytop, show_names):
+def plot_window(folder, title, d, lo, hi, limit, phases, bin_s, show_names):
     """combined.png (three rows) and latency.png, rate.png, pods.png for one time window."""
     width = min(18, max(9, (hi - lo) / 60))
     fig, axes = plt.subplots(3, 1, figsize=(width, 9), sharex=True,
                              gridspec_kw={"height_ratios": [3, 1.3, 1.3]})
     for row, ax in zip(ROWS, axes):
-        draw_row(row, ax, d, lo, hi, limit, phases, bin_s, ytop, show_names)
+        draw_row(row, ax, d, lo, hi, limit, phases, bin_s, show_names)
         ax.set_ylabel(YLABEL[row])
-        ax.legend(loc="upper left", fontsize=7)
+        ax.legend(loc="best", fontsize=7)
     axes[-1].set_xlabel("time from the load start (s)")
     fig.suptitle(title)
     save(fig, folder, "combined.png")
     for row in ROWS:
         fig, ax = plt.subplots(figsize=(width, 4.5 if row == "latency" else 3.5))
-        draw_row(row, ax, d, lo, hi, limit, phases, bin_s, ytop, show_names)
+        draw_row(row, ax, d, lo, hi, limit, phases, bin_s, show_names)
         ax.set_ylabel(YLABEL[row])
         ax.set_xlabel("time from the load start (s)")
-        ax.legend(loc="upper left", fontsize=7)
+        ax.legend(loc="best", fontsize=7)
         ax.set_title(f"{title}: {row}")
         save(fig, folder, f"{row}.png")
 
 
-def plot_side_by_side(folder, title, d, limit, phases, ytop):
+def phase_window(a, b):
+    """Time range shown for a phase: a longer lead-in, so the change at the phase start is not at the edge"""
+    return max(a - max(15.0, 0.3 * (b - a)), -5.0), b + max(5.0, 0.1 * (b - a))
+
+
+def plot_side_by_side(folder, title, d, limit, phases):
     """All phases next to each other, each zoomed: combined.png and one file per row."""
     n = len(phases)
-    windows = [(name, a - max(5.0, 0.05 * (b - a)), b + max(5.0, 0.05 * (b - a)), a, b)
-               for name, a, b in phases]
+    windows = [(name, *phase_window(a, b), a, b) for name, a, b in phases]
 
     def grid(rows, height):
         fig, axes = plt.subplots(len(rows), n, figsize=(max(4 * n, 8), height), squeeze=False,
@@ -219,10 +223,10 @@ def plot_side_by_side(folder, title, d, limit, phases, ytop):
         for j, (name, lo, hi, a, b) in enumerate(windows):
             for i, row in enumerate(rows):
                 ax = axes[i, j]
-                draw_row(row, ax, d, lo, hi, limit, phases, 5, ytop, False)
+                draw_row(row, ax, d, lo, hi, limit, phases, 5, False)
                 if j == 0:
                     ax.set_ylabel(YLABEL[row])
-                    ax.legend(loc="upper left", fontsize=6)
+                    ax.legend(loc="best", fontsize=6)
             axes[0, j].set_title(f"{name}\n{a:.0f}–{b:.0f} s", fontsize=9)
             axes[-1, j].set_xlabel("s")
         return fig
@@ -287,18 +291,15 @@ def main():
     else:
         phases = [("whole run", 0.0, float(np.ceil(d["duration"])))]
     end = max(b for _, _, b in phases) + 30  # the tail after the load ends
-    # Latency axis: high enough for the bulk, extreme points are clipped and marked
-    ytop = max(2.5 * args.limit, float(np.percentile(d["lat"], 99))) * 1.1
-    ytop = min(ytop, 20000)
 
     title = args.title or os.path.basename(os.path.normpath(args.run))
     plots = os.path.join(args.run, "plots")
-    plot_window(os.path.join(plots, "00-overview"), title, d, 0, end, args.limit, phases, 10, ytop, True)
-    plot_side_by_side(os.path.join(plots, "00-all-phases"), title, d, args.limit, phases, ytop)
+    plot_window(os.path.join(plots, "00-overview"), title, d, 0, end, args.limit, phases, 10, True)
+    plot_side_by_side(os.path.join(plots, "00-all-phases"), title, d, args.limit, phases)
     for i, (name, a, b) in enumerate(phases, 1):
-        margin = max(5.0, 0.05 * (b - a))
+        lo, hi = phase_window(a, b)
         plot_window(os.path.join(plots, f"{i:02d}-{slug(name)}"), f"{title} – {name} ({a:.0f}–{b:.0f} s)",
-                    d, a - margin, b + margin, args.limit, phases, 5, ytop, False)
+                    d, lo, hi, args.limit, phases, 5, False)
 
     rows = phase_stats(d, phases, args.limit)
     cols = []
@@ -310,11 +311,15 @@ def main():
         w.writerows(rows)
     keys = ["phase", "completed", "over_limit", "within_limit_pct", "p95_ms", "max_ms",
             "p95_above_limit_s", "pods_total", "switches_up", "switches_down"]
-    print(" ".join(f"{k:>17}" if i else f"{k:<16}" for i, k in enumerate(keys)))
+    # The same table readable in the run directory (phases.txt) and on the screen
+    lines = [" ".join(f"{k:>17}" if i else f"{k:<16}" for i, k in enumerate(keys))]
     for r in rows:
-        print(" ".join(f"{str(r.get(k, '')):>17}" if i else f"{str(r.get(k, '')):<16}"
-                       for i, k in enumerate(keys)))
-    print("saved phases.csv and the plots/ folder in", args.run)
+        lines.append(" ".join(f"{str(r.get(k, '')):>17}" if i else f"{str(r.get(k, '')):<16}"
+                              for i, k in enumerate(keys)))
+    with open(os.path.join(args.run, "phases.txt"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print("\n".join(lines))
+    print("saved phases.csv, phases.txt and the plots/ folder in", args.run)
 
 
 if __name__ == "__main__":
