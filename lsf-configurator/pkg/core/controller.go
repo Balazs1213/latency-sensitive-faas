@@ -184,18 +184,38 @@ func (c *latencyController) tick() {
 	}
 }
 
-// controlApp decides on the reconfiguration of an app with traffic in the metric window
-func (c *latencyController) controlApp(appID string, runtime float64, traceCount int) {
+// controlledApp loads an app for the control loop, or returns nil when it cannot be loaded or has no latency limit
+func (c *latencyController) controlledApp(appID string) *FunctionApp {
 	app, err := c.composer.GetFunctionApp(appID)
 	if err != nil {
 		log.Printf("Error retrieving function app %s: %v", appID, err)
-		return
+		return nil
 	}
 	if app == nil {
 		log.Printf("Found traces for app %s, but app is not registered in the database. Skipping", appID)
-		return
+		return nil
 	}
 	if app.LatencyLimit <= 0 {
+		return nil
+	}
+	return app
+}
+
+// followTraffic sizes the warm pods of an app to its measured arrival rate (adaptive prewarm and rate following)
+// and returns the rate
+func (c *latencyController) followTraffic(app *FunctionApp, traceCount int) float64 {
+	if c.prewarmMode == "adaptive" {
+		c.adaptStandby(app, traceCount)
+	}
+	rate := c.arrivalRate(traceCount)
+	c.followRate(app, rate)
+	return rate
+}
+
+// controlApp decides on the reconfiguration of an app with traffic in the metric window
+func (c *latencyController) controlApp(appID string, runtime float64, traceCount int) {
+	app := c.controlledApp(appID)
+	if app == nil {
 		return
 	}
 
@@ -203,13 +223,8 @@ func (c *latencyController) controlApp(appID string, runtime float64, traceCount
 	if runtime > float64(app.LatencyLimit) {
 		logPhase(app.Id, "violation_seen", app.ActiveLayoutKey, "", runtime)
 	}
-	// Adaptive prewarm: scale up the next layout's standby before the latency limit is reached
-	if c.prewarmMode == "adaptive" {
-		c.adaptStandby(app, traceCount)
-	}
-	// Rate following: keep the active layout's warm pods at what the measured rate needs
-	rate := c.arrivalRate(traceCount)
-	c.followRate(app, rate)
+
+	rate := c.followTraffic(app, traceCount)
 
 	if c.inCooldown(app.Id) {
 		return
@@ -283,12 +298,8 @@ func (c *latencyController) controlIdleApp(app *FunctionApp, traceCount int) {
 	if app.LatencyLimit <= 0 {
 		return
 	}
-	// Adaptive prewarm: without traffic the rate is low, so a boosted standby is scaled back after the quiet period
-	if c.prewarmMode == "adaptive" {
-		c.adaptStandby(app, traceCount)
-	}
-	// Rate following: without traffic the rate is zero, so the warm pods go down to one after the hold time
-	c.followRate(app, c.arrivalRate(traceCount))
+	// Without traffic the rate is zero: a boosted standby and the warm pods go back down after their hold time
+	c.followTraffic(app, traceCount)
 
 	if app.ActiveLayoutKey == LayoutKeyMin || c.inCooldown(app.Id) {
 		return
