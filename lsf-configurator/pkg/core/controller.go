@@ -34,6 +34,29 @@ const (
 // the latency in milliseconds and the trace count, both keyed by app ID.
 type MetricQueryFunc func(timeRangeGte string) (map[string]float64, map[string]int, error)
 
+// trafficState is what the metric window shows about the traffic of an app
+type trafficState int
+
+const (
+	trafficMeasured trafficState = iota // requests completed in the window: the latency is measured
+	trafficStalled                      // requests in the window, but none completed in it: the app is overloaded
+	trafficIdle                         // no request in the window
+)
+
+// classifyTraffic tells an idle app apart from one whose requests take longer than the metric window: a request
+// only counts as completed when both its first and its last span fall in the window, so under a heavy overload
+// an app with plenty of traffic has no measured latency at all
+func classifyTraffic(measured bool, traceCount int) trafficState {
+	switch {
+	case measured:
+		return trafficMeasured
+	case traceCount > 0:
+		return trafficStalled
+	default:
+		return trafficIdle
+	}
+}
+
 type latencyController struct {
 	composer                     *Composer
 	metrics                      MetricsReader
@@ -165,23 +188,40 @@ func (c *latencyController) tick() {
 	c.refreshComponentRuntimes()
 	c.logRuntimes(runtimes)
 
-	handledApps := make(map[string]bool)
-	for appID, runtime := range runtimes {
-		handledApps[appID] = true
-		c.controlApp(appID, runtime, traceCounts[appID])
-	}
-
-	// Handle apps with no reported runtimes (possible downgrade)
 	apps, err := c.composer.functionAppRepo.GetAll()
 	if err != nil {
 		log.Printf("Error retrieving all function apps: %v", err)
 		return
 	}
 	for _, app := range apps {
-		if !handledApps[app.Id] {
-			c.controlIdleApp(app, traceCounts[app.Id])
+		runtime, measured := runtimes[app.Id]
+		traceCount := traceCounts[app.Id]
+		switch classifyTraffic(measured, traceCount) {
+		case trafficMeasured:
+			c.controlApp(app.Id, runtime, traceCount)
+		case trafficStalled:
+			c.controlStalledApp(app.Id, traceCount)
+		default:
+			c.controlIdleApp(app, traceCount)
 		}
 	}
+}
+
+// controlStalledApp handles an app with traffic but without a completed request in the metric window. Its requests
+// take longer than the window, so it is overloaded, not idle: it is never downgraded, and with enough requests in
+// the window it is upgraded as on a latency violation
+func (c *latencyController) controlStalledApp(appID string, traceCount int) {
+	app := c.controlledApp(appID)
+	if app == nil {
+		return
+	}
+	logPhase(app.Id, "stalled", app.ActiveLayoutKey, "", float64(traceCount))
+	c.resetDowngradeCount(app.Id)
+	c.followTraffic(app, traceCount)
+	if c.inCooldown(app.Id) || traceCount < minimalTraceCount {
+		return
+	}
+	c.applyReconfig(app, c.handleLatencyViolation)
 }
 
 // controlledApp loads an app for the control loop, or returns nil when it cannot be loaded or has no latency limit
