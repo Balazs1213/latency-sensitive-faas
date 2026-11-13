@@ -113,10 +113,11 @@ func (c *latencyController) layoutServing(app *FunctionApp, key string) bool {
 }
 
 // failover switches a stalled app away from an active layout that cannot serve (a composition without a single
-// ready pod, e.g. its node is lost) to another layout that can. Like a scale-down, it waits as long as a pod
-// startup takes (ski rental rule): a pod that is only restarting is back within that time. Reports whether it
-// switched.
-func (c *latencyController) failover(app *FunctionApp) bool {
+// ready pod, e.g. its node is lost) to another layout that can serve and whose capacity covers the measured rate.
+// A layout too small for the rate would only be overloaded, while the requests held for the active layout still
+// complete once its pods are back. Like a scale-down, it waits as long as a pod startup takes (ski rental rule): a
+// pod that is only restarting is back within that time. Reports whether it switched.
+func (c *latencyController) failover(app *FunctionApp, rate float64) bool {
 	if c.layoutServing(app, app.ActiveLayoutKey) {
 		delete(c.unservedSince, app.Id)
 		return false
@@ -130,7 +131,9 @@ func (c *latencyController) failover(app *FunctionApp) bool {
 	if now.Sub(since) < c.scaleDownHold() {
 		return false
 	}
-	target := failoverTarget(app, func(key string) bool { return c.layoutServing(app, key) })
+	target := failoverTarget(app, func(key string) bool {
+		return c.layoutServing(app, key) && c.layoutCapacity(app.Id, app.LayoutCandidates[key]) >= rate
+	})
 	if target == "" {
 		return false
 	}

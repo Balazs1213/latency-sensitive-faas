@@ -222,8 +222,8 @@ func (c *latencyController) controlStalledApp(appID string, traceCount int) {
 	}
 	logPhase(app.Id, "stalled", app.ActiveLayoutKey, "", float64(traceCount))
 	c.resetDowngradeCount(app.Id)
-	c.followTraffic(app, traceCount)
-	if c.inCooldown(app.Id) || c.failover(app) || traceCount < minimalTraceCount {
+	rate := c.followTraffic(app, traceCount)
+	if c.inCooldown(app.Id) || c.failover(app, rate) || traceCount < minimalTraceCount {
 		return
 	}
 	c.applyReconfig(app, c.handleLatencyViolation)

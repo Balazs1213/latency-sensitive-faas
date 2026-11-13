@@ -6,6 +6,9 @@ acknowledges the request; the processing continues asynchronously, so the latenc
 Trace columns (traces.csv): complete traces that started in the bin, their p95 and maximum end-to-end latency, how
 many exceeded the latency limit, and how many traces started in the bin but never completed.
 
+At the end, the outcome of all requests: completed within / above the limit, accepted (HTTP 200) but never
+completed, rejected at the entry (no response or an error other than HTTP 500) and the background HTTP 500 loss.
+
 Usage: fault_timeline.py RUN_DIR [BIN_S] [FAULT_S] [LIMIT_MS]
 """
 import csv
@@ -46,3 +49,23 @@ for b in sorted(set(sent) | set(latencies) | set(incomplete)):
     late = sum(1 for x in lat if x > limit_ms)
     mark = " <- fault" if fault_s is not None and b * bin_s <= fault_s < (b + 1) * bin_s else ""
     print(f"{b * bin_s:6.0f} {sent[b]:5d} {failed[b]:5d} {wait[b]:6.1f} | {len(lat):6d} {p95:6.0f} {mx:6.0f} {late:5d} {incomplete[b]:7d}{mark}")
+
+# Outcome of all requests. HTTP 200 only acknowledges the request, so "arrived" means a complete trace.
+statuses = Counter(r["status"] for r in requests)
+total = len(requests)
+complete = [x for lat in latencies.values() for x in lat]
+within = sum(1 for x in complete if x <= limit_ms)
+accepted = statuses.get("200", 0)
+rejected = total - accepted - statuses.get("500", 0)
+
+
+def row(label, n):
+    print(f"  {label:<50} {n:6d}  {100 * n / total:5.1f}%")
+
+
+print(f"\nRequest outcomes ({total} sent):")
+row("completed within the limit", within)
+row("completed above the limit", len(complete) - within)
+row("accepted (HTTP 200) but not completed", max(0, accepted - len(complete)))
+row("rejected at the entry (no response, HTTP 502/503/...)", rejected)
+row("HTTP 500 (the usual background loss)", statuses.get("500", 0))
