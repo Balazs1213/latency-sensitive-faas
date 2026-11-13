@@ -91,6 +91,7 @@ type latencyController struct {
 	rateHistory                  map[string][]ratePoint                 // appId -> measured rates of the last metric window
 	downgradeSince               map[string]time.Time                   // appId -> since when the rate has fitted the smaller layout (follow mode)
 	unservedSince                map[string]time.Time                   // appId -> since when the active layout of a stalled app cannot serve
+	lastRevisionCheck            time.Time                              // last check of the deployments' revisions (once per metric window)
 }
 
 // NewController creates the latency controller. An unknown prewarm mode falls back to "off", an unknown metric
@@ -194,6 +195,7 @@ func (c *latencyController) tick() {
 		log.Printf("Error retrieving all function apps: %v", err)
 		return
 	}
+	c.repairRevisions(apps)
 	for _, app := range apps {
 		runtime, measured := runtimes[app.Id]
 		traceCount := traceCounts[app.Id]

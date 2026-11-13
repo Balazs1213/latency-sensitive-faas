@@ -171,3 +171,38 @@ func failoverTarget(app *FunctionApp, serving func(key string) bool) string {
 	}
 	return ""
 }
+
+// repairRevisions replaces the broken revisions of the apps' deployments, once per metric window. An overload or
+// a lost node can break a revision (its container exits), and Knative neither repairs it nor holds its min-scale.
+func (c *latencyController) repairRevisions(apps []*FunctionApp) {
+	now := time.Now()
+	if now.Sub(c.lastRevisionCheck) < c.metricWindow {
+		return
+	}
+	c.lastRevisionCheck = now
+	for _, app := range apps {
+		c.repairAppRevisions(app.Id)
+	}
+}
+
+// repairAppRevisions replaces the broken revisions of one app's deployments
+func (c *latencyController) repairAppRevisions(appID string) {
+	// Reload the app: compositions and their deployments are only loaded by GetFunctionApp
+	app, err := c.composer.GetFunctionApp(appID)
+	if err != nil || app == nil {
+		return
+	}
+	for _, fc := range app.Compositions {
+		for _, d := range fc.Deployments {
+			repaired, err := c.composer.RepairDeploymentRevision(d)
+			if err != nil {
+				log.Printf("Failed to check the revision of deployment %s: %v", d.Id, err)
+				continue
+			}
+			if repaired {
+				logPhase(app.Id, "revision_repair", app.ActiveLayoutKey, d.Id, 0)
+				log.Printf("Revision of deployment %s of app %s was broken, rolled out a new one", d.Id, app.Id)
+			}
+		}
+	}
+}
