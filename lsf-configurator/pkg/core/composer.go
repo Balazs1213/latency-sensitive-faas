@@ -229,6 +229,11 @@ func (c *Composer) DeploymentReadyPods(dep *Deployment) (int, error) {
 	return c.scaleClient.ReadyPods(context.TODO(), dep.Namespace, dep.Id)
 }
 
+// RepairDeploymentRevision replaces the broken revision of a deployment and reports whether it did
+func (c *Composer) RepairDeploymentRevision(dep *Deployment) (bool, error) {
+	return c.scaleClient.RepairRevision(context.TODO(), dep.Namespace, dep.Id)
+}
+
 // UpdateDNSRecord points the DNS record of an app's entry point to the given deployment.
 func (c *Composer) UpdateDNSRecord(appID, namespace, targetDeploymentID string) error {
 	return c.dnsClient.EnsureDNSRecord(context.TODO(), namespace, appID, targetDeploymentID)

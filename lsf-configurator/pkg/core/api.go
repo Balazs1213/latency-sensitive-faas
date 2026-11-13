@@ -86,8 +86,10 @@ type DNSClient interface {
 	DeleteDNSRecord(ctx context.Context, namespace, appName string) error
 }
 
-// ScaleClient sets the min-scale of Knative services and reads how many of their pods are ready.
+// ScaleClient sets the min-scale of Knative services, reads how many of their pods are ready and replaces their
+// broken revisions.
 type ScaleClient interface {
 	SetMinScale(ctx context.Context, namespace, serviceName string, minScale int) error
 	ReadyPods(ctx context.Context, namespace, serviceName string) (int, error)
+	RepairRevision(ctx context.Context, namespace, serviceName string) (bool, error)
 }
