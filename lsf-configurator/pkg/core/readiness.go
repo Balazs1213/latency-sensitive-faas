@@ -104,3 +104,28 @@ func (c *latencyController) scaleDownHold() time.Duration {
 	}
 	return rateScaleDownHold
 }
+
+// allCompositionsReady reports whether every composition of a layout has at least one ready pod on its node. An
+// empty (unknown) layout cannot serve, so it is not ready.
+func allCompositionsReady(layout Layout, readyPods func(node string, ci CompositionInfo) int) bool {
+	if len(layout) == 0 {
+		return false
+	}
+	for node, ci := range layout {
+		if readyPods(node, ci) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// failoverTarget picks the layout an app switches to when its active layout cannot serve: the first other layout
+// candidate (in key order) that can serve, or "" when there is none
+func failoverTarget(app *FunctionApp, serving func(key string) bool) string {
+	for _, key := range sortedLayoutKeys(app) {
+		if key != app.ActiveLayoutKey && serving(key) {
+			return key
+		}
+	}
+	return ""
+}
