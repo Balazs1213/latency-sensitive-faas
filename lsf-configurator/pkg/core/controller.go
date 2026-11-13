@@ -90,7 +90,7 @@ type latencyController struct {
 	rateForecast                 bool                                   // rate following sizes the pods for the forecast rate
 	rateHistory                  map[string][]ratePoint                 // appId -> measured rates of the last metric window
 	downgradeSince               map[string]time.Time                   // appId -> since when the rate has fitted the smaller layout (follow mode)
-
+	unservedSince                map[string]time.Time                   // appId -> since when the active layout of a stalled app cannot serve
 }
 
 // NewController creates the latency controller. An unknown prewarm mode falls back to "off", an unknown metric
@@ -158,6 +158,7 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 		rateForecast:                 rateForecast,
 		rateHistory:                  make(map[string][]ratePoint),
 		downgradeSince:               make(map[string]time.Time),
+		unservedSince:                make(map[string]time.Time),
 	}
 }
 
@@ -196,7 +197,11 @@ func (c *latencyController) tick() {
 	for _, app := range apps {
 		runtime, measured := runtimes[app.Id]
 		traceCount := traceCounts[app.Id]
-		switch classifyTraffic(measured, traceCount) {
+		state := classifyTraffic(measured, traceCount)
+		if state != trafficStalled {
+			delete(c.unservedSince, app.Id) // the failover clock only runs while the app is stalled
+		}
+		switch state {
 		case trafficMeasured:
 			c.controlApp(app.Id, runtime, traceCount)
 		case trafficStalled:
@@ -218,7 +223,7 @@ func (c *latencyController) controlStalledApp(appID string, traceCount int) {
 	logPhase(app.Id, "stalled", app.ActiveLayoutKey, "", float64(traceCount))
 	c.resetDowngradeCount(app.Id)
 	c.followTraffic(app, traceCount)
-	if c.inCooldown(app.Id) || traceCount < minimalTraceCount {
+	if c.inCooldown(app.Id) || c.failover(app) || traceCount < minimalTraceCount {
 		return
 	}
 	c.applyReconfig(app, c.handleLatencyViolation)

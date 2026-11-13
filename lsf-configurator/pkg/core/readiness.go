@@ -105,6 +105,45 @@ func (c *latencyController) scaleDownHold() time.Duration {
 	return rateScaleDownHold
 }
 
+// layoutServing reports whether the layout under the key can serve: each of its compositions has a ready pod
+func (c *latencyController) layoutServing(app *FunctionApp, key string) bool {
+	return allCompositionsReady(app.LayoutCandidates[key], func(node string, ci CompositionInfo) int {
+		return c.compositionReadyPods(app, ci, node)
+	})
+}
+
+// failover switches a stalled app away from an active layout that cannot serve (a composition without a single
+// ready pod, e.g. its node is lost) to another layout that can. Like a scale-down, it waits as long as a pod
+// startup takes (ski rental rule): a pod that is only restarting is back within that time. Reports whether it
+// switched.
+func (c *latencyController) failover(app *FunctionApp) bool {
+	if c.layoutServing(app, app.ActiveLayoutKey) {
+		delete(c.unservedSince, app.Id)
+		return false
+	}
+	now := time.Now()
+	since, seen := c.unservedSince[app.Id]
+	if !seen {
+		c.unservedSince[app.Id] = now
+		return false
+	}
+	if now.Sub(since) < c.scaleDownHold() {
+		return false
+	}
+	target := failoverTarget(app, func(key string) bool { return c.layoutServing(app, key) })
+	if target == "" {
+		return false
+	}
+	delete(c.unservedSince, app.Id)
+	logPhase(app.Id, "failover", target, "", now.Sub(since).Seconds())
+	log.Printf("Active layout %s of app %s cannot serve for %.0f s, failing over to layout %s",
+		app.ActiveLayoutKey, app.Id, now.Sub(since).Seconds(), target)
+	c.applyReconfig(app, func(a *FunctionApp) (string, error) {
+		return c.handleLayoutChange(a, map[string]string{a.ActiveLayoutKey: target}, false)
+	})
+	return true
+}
+
 // allCompositionsReady reports whether every composition of a layout has at least one ready pod on its node. An
 // empty (unknown) layout cannot serve, so it is not ready.
 func allCompositionsReady(layout Layout, readyPods func(node string, ci CompositionInfo) int) bool {
