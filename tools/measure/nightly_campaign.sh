@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Nightly measurement campaign, started by cron every evening until END_DATE (inclusive).
 # Runs the whole campaign (run_campaign.sh) on the framework code as it is in the repository that evening, into
-# ~/thesis/measurements/nightly/<date>/. The image of the night is built if it is missing and pinned, so commits
+# ~/thesis/measurements/thesis-final/<date>/ (log of all nights: thesis-final/nightly.log). The image of the night is built if it is missing and pinned, so commits
 # made while the campaign runs do not change what is measured.
 #
 # crontab (the hour is in the time zone of the machine):
@@ -10,7 +10,7 @@
 
 END_DATE=${END_DATE:-2026-12-31}
 REPO=${REPO:-$HOME/thesis/latency-sensitive-faas}
-NIGHTLY=${NIGHTLY:-$HOME/thesis/measurements/nightly}
+NIGHTLY=${NIGHTLY:-$HOME/thesis/measurements/thesis-final}
 export PATH=/usr/local/bin:/usr/local/go/bin:/usr/bin:/bin:$HOME/.local/bin:$PATH   # cron starts with a minimal PATH
 
 today=$(date +%F)
