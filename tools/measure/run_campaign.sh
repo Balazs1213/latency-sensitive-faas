@@ -119,24 +119,55 @@ uncordon_nodes() {  # a node left unschedulable by an interrupted node-loss expe
 
 ksvcs() { kubectl get ksvc -n $NS -o name | sed 's#.*/##' | grep '^d-'; }
 
-rev_ok() {  # the latest created revision of the Knative service is Ready
-  local rev
-  rev=$(kubectl get ksvc "$1" -n $NS -o jsonpath='{.status.latestCreatedRevisionName}')
-  [ -n "$rev" ] && [ "$(kubectl get revision "$rev" -n $NS \
-    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" = "True" ]
+app_json() { kubectl get --raw "/api/v1/namespaces/configurator/services/lsf-configurator:80/proxy/function_apps/$APP" 2>/dev/null; }
+
+known_deployments() {  # deployment ids the controller's database knows (any composition, any layout)
+  app_json | python -c '
+import sys, json
+a = json.load(sys.stdin)
+print("\n".join(d["id"] for fc in a.get("compositions") or [] for d in fc.get("deployments") or []))'
 }
 
-repair_revisions() {  # backup of the controller's own repair: forces a new revision where the latest is not Ready
-  local s ok=0
+ORPHAN_AGE_S=${ORPHAN_AGE_S:-900}   # a service younger than this may still be in creation (stored after its deploy)
+remove_orphans() {  # d- services the controller no longer knows: left over from an earlier configuration
+  local known s created age
+  known=$(known_deployments) || return 0
+  [ -n "$known" ] || return 0   # API not reachable or empty answer: never delete blindly
   for s in $(ksvcs); do
-    rev_ok "$s" && continue
-    log "revision of $s is not ready, forcing a new one"
+    grep -qx "$s" <<< "$known" && continue
+    created=$(kubectl get ksvc "$s" -n $NS -o jsonpath='{.metadata.creationTimestamp}')
+    age=$(( $(date +%s) - $(date -d "$created" +%s) ))
+    [ "$age" -lt "$ORPHAN_AGE_S" ] && continue
+    log "service $s (created $created) is not known to the controller, deleting it"
+    kubectl delete ksvc "$s" -n $NS --wait=false >/dev/null
+  done
+}
+
+rev_state() {  # "<Ready status> <reason>" of the latest created revision of a Knative service
+  local rev
+  rev=$(kubectl get ksvc "$1" -n $NS -o jsonpath='{.status.latestCreatedRevisionName}')
+  [ -n "$rev" ] || { echo "Unknown none"; return; }
+  kubectl get revision "$rev" -n $NS \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status} {.status.conditions[?(@.type=="Ready")].reason}'
+}
+
+repair_revisions() {
+  # Backup of the controller's own repair (the baseline image has none). A new revision only where the latest one
+  # cannot recover by itself: its container exited (reason ExitCode...), or Knative gave up starting it
+  # (ProgressDeadlineExceeded: there was no room for its pods) and now no pod is waiting for room. A revision whose
+  # pods are still starting or find no room is left alone: a new revision would only start more pods.
+  local s state
+  for s in $(ksvcs); do
+    state=$(rev_state "$s")
+    case $state in
+      False\ ExitCode*) ;;
+      False\ ProgressDeadlineExceeded) kubectl get pods -n $NS --no-headers 2>/dev/null | grep -q ' Pending ' && continue ;;
+      *) continue ;;
+    esac
+    log "revision of $s failed ($state), forcing a new one"
     kubectl patch ksvc "$s" -n $NS --type merge -p \
       "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"lsf.thesis/restarted-at\":\"$(date -u +%FT%TZ)\"}}}}}" >/dev/null
-    for _ in $(seq 24); do rev_ok "$s" && break; sleep 5; done
-    rev_ok "$s" || ok=1
   done
-  return $ok
 }
 
 pods_ok() {  # all d- pods Running and fully ready
@@ -144,9 +175,17 @@ pods_ok() {  # all d- pods Running and fully ready
     awk '{n++; split($2,a,"/"); if ($3!="Running" || a[1]!=a[2]) bad=1} END{exit (bad || n==0)}'
 }
 
+log_unready_pods() {  # which pods are not ready, and why a Pending one is not scheduled
+  local p
+  kubectl get pods -n $NS --no-headers | grep '^d-' | grep -v Terminating | \
+    awk '{split($2,a,"/"); if ($3!="Running" || a[1]!=a[2]) print "  " $1, $2, $3}' | head -5 | tee -a "$LOG"
+  p=$(kubectl get pods -n $NS --no-headers | awk '$1 ~ /^d-/ && $3=="Pending" {print $1; exit}')
+  [ -n "$p" ] && kubectl get events -n $NS --field-selector involvedObject.name="$p" --no-headers 2>/dev/null \
+    | tail -1 | cut -c1-220 | sed 's/^/  /' | tee -a "$LOG"
+}
+
 active_layout() {  # active_layout_key of the app, from the configurator API through the API server proxy
-  kubectl get --raw "/api/v1/namespaces/configurator/services/lsf-configurator:80/proxy/function_apps/$APP" \
-    2>/dev/null | python -c 'import sys, json; print(json.load(sys.stdin).get("active_layout_key", ""))' 2>/dev/null
+  app_json | python -c 'import sys, json; print(json.load(sys.stdin).get("active_layout_key", ""))' 2>/dev/null
 }
 
 wait_small_layout() {  # without traffic the controller switches back to min_rate by itself
@@ -179,10 +218,11 @@ check_env() {  # 0 when the environment is clean enough for a measurement
   for attempt in 1 2 3; do
     bad=0
     uncordon_nodes
+    remove_orphans
     ensure_es || { log "Elasticsearch still not reachable"; bad=1; }
-    repair_revisions || bad=1
+    repair_revisions
     for _ in $(seq 36); do pods_ok && break; sleep 5; done
-    pods_ok || { log "pods are not ready"; bad=1; }
+    pods_ok || { log "pods are not ready:"; log_unready_pods; bad=1; }
     wait_small_layout || bad=1
     disk_ok || { bad=1; sleep 60; }
     [ $bad = 0 ] && return 0
@@ -198,6 +238,9 @@ switch_config() {  # applies a configuration (folder name); configs/<config>/ ke
   [ "$CURRENT_CONFIG" = "$1" ] && return 0
   local dir=$ROOT/configs/$1
   mkdir -p "$dir"
+  # After a run the controller switches back to the small layout and deletes the large layout's deployments
+  # 10 s later; restarting it in between (Egon's baseline image) leaves their Knative services behind
+  wait_small_layout && sleep 30
   log "config $1"
   case $1 in
     1-baseline-original)      RATE_FORECAST=false tools/measure/use_config.sh baseline "$dir" ;;
@@ -244,7 +287,10 @@ run_one() {  # $1 run dir relative to ROOT, then the measure arguments from the 
   [ -f "$D/DONE" ] && { log "skip $rel (done)"; return; }
   if ! check_env; then
     FAILS=$((FAILS+1)); log "SKIP $rel: environment not clean ($FAILS in a row)"
-    [ $FAILS -ge 3 ] && { log "aborting after 3 failed checks"; write_summary; exit 1; }
+    if [ $FAILS -ge 3 ]; then
+      log "aborting after 3 failed checks; leaving the cluster in $FAULT_CONFIG"
+      switch_config "$FAULT_CONFIG"; remove_orphans; write_summary; exit 1
+    fi
     return
   fi
   FAILS=0
