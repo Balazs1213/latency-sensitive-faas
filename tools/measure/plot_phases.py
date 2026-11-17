@@ -27,6 +27,7 @@ import numpy as np
 from reconfig_breakdown import read_phases
 
 P95_WINDOW_S = 15
+RATE_AVG_S = 30  # averaging of the offered rate drawn on the latency plot
 
 
 def parse_phases(text):
@@ -121,7 +122,7 @@ def decorate(ax, d, lo, hi, phases):
             ax.axvline(begin, color="red", lw=1, alpha=0.7)
 
 
-def draw_latency(ax, d, lo, hi, limit, phases, show_names):
+def draw_latency(ax, d, lo, hi, limit, phases, show_names, legend=True):
     m = (d["start"] >= lo) & (d["start"] <= hi)
     ax.scatter(d["start"][m], d["lat"][m], s=3, color="tab:red", alpha=0.5, label="latency per request")
     grid, p95 = rolling_p95(d["start"], d["lat"], lo, hi)
@@ -134,6 +135,8 @@ def draw_latency(ax, d, lo, hi, limit, phases, show_names):
     ytop = max(peaks) * 1.12
     ax.set_ylim(0, ytop)
     decorate(ax, d, lo, hi, phases)
+    if any(lo <= begin <= hi for begin, _, _ in d["bands"]):
+        ax.plot([], [], color="red", lw=1, label="layout switch (↑ up, ↓ down, with its duration)")
     for begin, dur, layout in d["bands"]:
         if lo <= begin <= hi:
             arrow = {"max_rate": "↑", "min_rate": "↓"}.get(layout, "")
@@ -143,6 +146,18 @@ def draw_latency(ax, d, lo, hi, limit, phases, show_names):
             if b > lo and a < hi:
                 ax.text((max(a, lo) + min(b, hi)) / 2, ytop * 1.02, name, ha="center",
                         va="bottom", fontsize=8)
+    # The offered load on a second axis, as in plot_run.py's run.png; 30 s average, 10 s in short windows
+    avg = RATE_AVG_S if hi - lo > 300 else 10
+    rate_ax = ax.twinx()
+    x, offered = rate(d["sched"], lo, hi, avg)
+    rate_ax.plot(x, offered, color="tab:blue", lw=1.2, label=f"offered rate ({avg} s avg)")
+    rate_ax.set_ylabel("requests/s", color="tab:blue")
+    rate_ax.set_ylim(bottom=0)
+    rate_ax.set_xlim(lo, hi)
+    if legend:
+        h1, l1 = ax.get_legend_handles_labels()
+        h2, l2 = rate_ax.get_legend_handles_labels()
+        ax.legend(h1 + h2, l1 + l2, loc="best", fontsize=7)
 
 
 def draw_rate(ax, d, lo, hi, phases, bin_s):
@@ -169,13 +184,18 @@ ROWS = ("latency", "rate", "pods")
 YLABEL = {"latency": "latency (ms)", "rate": "requests/s", "pods": "ready pods"}
 
 
-def draw_row(row, ax, d, lo, hi, limit, phases, bin_s, show_names):
+def draw_row(row, ax, d, lo, hi, limit, phases, bin_s, show_names, legend=True):
+    """Draws one row; the latency row draws its legend itself (it has a second axis), the others when asked"""
     if row == "latency":
-        draw_latency(ax, d, lo, hi, limit, phases, show_names)
-    elif row == "rate":
+        draw_latency(ax, d, lo, hi, limit, phases, show_names, legend)
+        return
+    if row == "rate":
         draw_rate(ax, d, lo, hi, phases, bin_s)
     else:
         draw_pods(ax, d, lo, hi, phases)
+    if legend:
+        ax.legend(loc="best", fontsize=7)
+
 
 
 def save(fig, folder, name):
@@ -193,7 +213,6 @@ def plot_window(folder, title, d, lo, hi, limit, phases, bin_s, show_names):
     for row, ax in zip(ROWS, axes):
         draw_row(row, ax, d, lo, hi, limit, phases, bin_s, show_names)
         ax.set_ylabel(YLABEL[row])
-        ax.legend(loc="best", fontsize=7)
     axes[-1].set_xlabel("time from the load start (s)")
     fig.suptitle(title)
     save(fig, folder, "combined.png")
@@ -202,8 +221,7 @@ def plot_window(folder, title, d, lo, hi, limit, phases, bin_s, show_names):
         draw_row(row, ax, d, lo, hi, limit, phases, bin_s, show_names)
         ax.set_ylabel(YLABEL[row])
         ax.set_xlabel("time from the load start (s)")
-        ax.legend(loc="best", fontsize=7)
-        ax.set_title(f"{title}: {row}")
+        ax.set_title(f"{title}: {row}", pad=16)
         save(fig, folder, f"{row}.png")
 
 
@@ -223,10 +241,9 @@ def plot_side_by_side(folder, title, d, limit, phases):
         for j, (name, lo, hi, a, b) in enumerate(windows):
             for i, row in enumerate(rows):
                 ax = axes[i, j]
-                draw_row(row, ax, d, lo, hi, limit, phases, 5, False)
+                draw_row(row, ax, d, lo, hi, limit, phases, 5, False, legend=(j == 0))
                 if j == 0:
                     ax.set_ylabel(YLABEL[row])
-                    ax.legend(loc="best", fontsize=6)
             axes[0, j].set_title(f"{name}\n{a:.0f}–{b:.0f} s", fontsize=9)
             axes[-1, j].set_xlabel("s")
         return fig
