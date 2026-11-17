@@ -66,6 +66,9 @@ type Configuration struct {
 	MeasuredCapacity bool `env:"MEASURED_CAPACITY" default:"false"`
 	// Rate following: size the pods for the arrival rate expected when a pod requested now becomes ready
 	RateForecast bool `env:"RATE_FORECAST" default:"false"`
+	// Backup layout when a node of the active layout is not available (not ready, cordoned or marked overloaded with
+	// the lsf-configurator/overloaded annotation): "off", or "cold" (the backup is deployed when it is needed)
+	BackupLayout string `env:"BACKUP_LAYOUT" default:"off"`
 }
 
 // Init loads the .env file if there is one and fills a Configuration from the environment. It exits the process

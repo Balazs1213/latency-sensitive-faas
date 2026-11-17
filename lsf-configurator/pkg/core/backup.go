@@ -1,8 +1,10 @@
 package core
 
 import (
+	"log"
 	"sort"
 	"strings"
+	"time"
 )
 
 // backupSuffix marks the layout candidate that stands in for another one whose nodes are not available
@@ -66,4 +68,66 @@ func sortedNodes(layout Layout) []string {
 	}
 	sort.Strings(nodes)
 	return nodes
+}
+
+// followNodeAvailability moves the apps off unavailable nodes to a backup layout and back once the nodes are
+// available again, once per metric window; only with a backup layout mode
+func (c *latencyController) followNodeAvailability(apps []*FunctionApp) {
+	now := time.Now()
+	if c.backupLayout == "off" || now.Sub(c.lastNodeCheck) < c.metricWindow {
+		return
+	}
+	c.lastNodeCheck = now
+	available, err := c.composer.NodeAvailability()
+	if err != nil {
+		log.Printf("Failed to read the node availability: %v", err)
+		return
+	}
+	for _, a := range apps {
+		app := c.controlledApp(a.Id)
+		if app == nil || c.inCooldown(app.Id) {
+			continue
+		}
+		if original, isBackup := backedUpLayout(app.ActiveLayoutKey); isBackup {
+			c.returnFromBackup(app, original, available)
+		} else if usesUnavailableNode(app.LayoutCandidates[app.ActiveLayoutKey], available) {
+			c.switchToBackup(app, available)
+		}
+	}
+}
+
+// switchToBackup adds the backup of the active layout as a layout candidate and switches to it: its deployments
+// on the new nodes are created now (cold), and the traffic moves once they are ready
+func (c *latencyController) switchToBackup(app *FunctionApp, available map[string]bool) {
+	backup := relocateLayout(app.LayoutCandidates[app.ActiveLayoutKey], available)
+	if backup == nil {
+		log.Printf("Active layout %s of app %s uses an unavailable node, but no free node is available for a backup",
+			app.ActiveLayoutKey, app.Id)
+		return
+	}
+	key := backupKey(app.ActiveLayoutKey)
+	app.LayoutCandidates[key] = backup
+	logPhase(app.Id, "backup", key, "", 0)
+	log.Printf("Active layout %s of app %s uses an unavailable node, switching to the backup layout %v",
+		app.ActiveLayoutKey, app.Id, sortedNodes(backup))
+	c.switchTo(app, key)
+}
+
+// returnFromBackup switches back to the layout a backup stands in for once its nodes are available again; the
+// backup leaves the candidates, so the cleanup after the switch removes its deployments
+func (c *latencyController) returnFromBackup(app *FunctionApp, original string, available map[string]bool) {
+	if usesUnavailableNode(app.LayoutCandidates[original], available) {
+		return
+	}
+	delete(app.LayoutCandidates, app.ActiveLayoutKey)
+	logPhase(app.Id, "backup_return", original, "", 0)
+	log.Printf("Nodes of layout %s of app %s are available again, switching back from the backup", original, app.Id)
+	c.switchTo(app, original)
+}
+
+// switchTo switches an app to a given layout candidate with all required replicas
+func (c *latencyController) switchTo(app *FunctionApp, layoutKey string) {
+	c.applyReconfig(app, func(a *FunctionApp) (string, error) {
+		return c.handleLayoutChange(a, map[string]string{a.ActiveLayoutKey: layoutKey}, true)
+	})
 }
