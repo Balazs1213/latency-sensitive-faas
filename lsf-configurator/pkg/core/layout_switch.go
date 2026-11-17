@@ -260,6 +260,9 @@ func (c *latencyController) reuseDeployment(appID, node string, dep *Deployment,
 	if standby && c.prewarmMode != "full" {
 		minScale = 1
 	}
+	if !standby {
+		minScale += c.spareFor(ci)
+	}
 	// Run in the background: the min-scale does not affect routing, so it must not delay the switch
 	go func() {
 		if err := c.composer.SetDeploymentMinScale(dep, minScale); err != nil {
@@ -272,9 +275,10 @@ func (c *latencyController) reuseDeployment(appID, node string, dep *Deployment,
 // table is set later, once the ids of all deployments of the layout are known.
 func (c *latencyController) createDeployment(appID, node string, fc *FunctionComposition, ci CompositionInfo, isUpgrade, standby bool) (*Deployment, error) {
 	log.Printf("No existing deployment found for node %s, creating new", node)
+	minReplicas := c.initialMinReplicas(ci, isUpgrade, standby)
 	scale := Scale{
-		MinReplicas:       c.initialMinReplicas(ci, isUpgrade, standby),
-		MaxReplicas:       ci.RequiredReplicas,
+		MinReplicas:       minReplicas,
+		MaxReplicas:       max(ci.RequiredReplicas, minReplicas),
 		TargetConcurrency: ci.TargetConcurrency,
 	}
 	resources := Resources{
@@ -299,12 +303,16 @@ func (c *latencyController) createDeployment(appID, node string, fc *FunctionCom
 
 // initialMinReplicas is the min-scale of a new deployment: all required replicas warm on upgrades, for "full"
 // standby layouts and (with prewarm) for the active layout, so that it runs at the capacity the model planned
-// for; one pod otherwise
+// for; one pod otherwise. A deployment of the active layout also runs its spare pods.
 func (c *latencyController) initialMinReplicas(ci CompositionInfo, isUpgrade, standby bool) int {
+	pods := 1
 	if isUpgrade || (standby && c.prewarmMode == "full") || (!standby && c.prewarmMode != "off") {
-		return ci.RequiredReplicas
+		pods = ci.RequiredReplicas
 	}
-	return 1
+	if !standby {
+		pods += c.spareFor(ci)
+	}
+	return pods
 }
 
 // routingTable builds the routing table of a deployment: for every link of its components the deployment that

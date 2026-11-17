@@ -94,13 +94,16 @@ type latencyController struct {
 	lastRevisionCheck            time.Time                              // last check of the deployments' revisions (once per metric window)
 	backupLayout                 string                                 // "off" or "cold": backup layout away from unavailable nodes
 	lastNodeCheck                time.Time                              // last check of the node availability (once per metric window)
+	sparePodMode                 string                                 // "off", "single" or "all": spare pods of the active layout
+	sparePodCount                int                                    // spare pods per composition that gets them
 }
 
 // NewController creates the latency controller. An unknown prewarm mode falls back to "off", an unknown metric
 // type to P95, and a metric window that cannot be parsed to 15 seconds.
 func NewController(composer *Composer, metrics MetricsReader, scenarioManager ScenarioManager,
 	delay time.Duration, deployNamespace string, availableNodeMemoryGb int, aggMetricType MetricType,
-	metricQueryTimeRange string, latencyDowngradeFactor float64, prewarmMode string, targetUtilization float64, boostRateFactor float64, switchRateFactor float64, measuredCapacity bool, rateForecast bool, backupLayout string) Controller {
+	metricQueryTimeRange string, latencyDowngradeFactor float64, prewarmMode string, targetUtilization float64, boostRateFactor float64, switchRateFactor float64, measuredCapacity bool, rateForecast bool,
+	backupLayout string, sparePodMode string, sparePodCount int) Controller {
 
 	if prewarmMode != "one" && prewarmMode != "full" && prewarmMode != "adaptive" && prewarmMode != "follow" {
 		prewarmMode = "off"
@@ -108,6 +111,13 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 	if backupLayout != "cold" {
 		backupLayout = "off"
 	}
+	if sparePodMode != SparePodsOff && sparePodMode != SparePodsAll {
+		sparePodMode = SparePodsSingle
+	}
+	if sparePodCount < 0 {
+		sparePodCount = 0
+	}
+	log.Printf("Spare pods: %s, %d per composition of the active layout", sparePodMode, sparePodCount)
 	log.Printf("Backup layout: %s (cold = deployed away from unavailable nodes when needed)", backupLayout)
 	log.Printf("Layout prewarm mode: %s (boost at %.2f of the layout capacity, utilization %.2f)", prewarmMode, boostRateFactor, targetUtilization)
 	log.Printf("Proactive switching: factor %.2f of the layout capacity (0 = off)", switchRateFactor)
@@ -167,6 +177,8 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 		downgradeSince:               make(map[string]time.Time),
 		unservedSince:                make(map[string]time.Time),
 		backupLayout:                 backupLayout,
+		sparePodMode:                 sparePodMode,
+		sparePodCount:                sparePodCount,
 	}
 }
 

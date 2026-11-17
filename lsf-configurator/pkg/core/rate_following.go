@@ -59,6 +59,9 @@ func (c *latencyController) rateTargets(app *FunctionApp, sizingRate float64) ma
 			if followed {
 				need = c.podsForRate(app.Id, ci, sizingRate)
 			}
+			if layoutKey == app.ActiveLayoutKey {
+				need += c.spareFor(ci)
+			}
 			key := compositionKey(ci) + "@" + node
 			if t, ok := targets[key]; !ok || need > t.need {
 				targets[key] = &rateTarget{ci: ci, node: node, need: need}

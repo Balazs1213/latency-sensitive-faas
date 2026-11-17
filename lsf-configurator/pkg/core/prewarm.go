@@ -24,7 +24,7 @@ func (c *latencyController) ensureStandbyLayouts(app *FunctionApp) {
 	}
 }
 
-// setLayoutMinScale sets the min-scale of every deployment of a layout candidate:
+// setLayoutMinScale sets the min-scale of every deployment of a layout candidate to layoutMinScale
 // all required replicas when boosted, one warm pod otherwise
 func (c *latencyController) setLayoutMinScale(app *FunctionApp, layoutKey string, boost bool) {
 	// Reload the app: compositions and their deployments are only loaded by GetFunctionApp
@@ -51,10 +51,7 @@ func (c *latencyController) setLayoutMinScale(app *FunctionApp, layoutKey string
 		if !ok {
 			continue
 		}
-		minScale := 1
-		if boost {
-			minScale = ci.RequiredReplicas
-		}
+		minScale := c.layoutMinScale(ci, layoutKey == app.ActiveLayoutKey, boost)
 		for _, d := range fc.Deployments {
 			if d.Node != node {
 				continue
@@ -66,6 +63,19 @@ func (c *latencyController) setLayoutMinScale(app *FunctionApp, layoutKey string
 			log.Printf("Set min-scale of deployment %s (layout %s) to %d", d.Id, layoutKey, minScale)
 		}
 	}
+}
+
+// layoutMinScale returns the min-scale of a composition of a layout candidate: all required replicas when boosted,
+// one warm pod otherwise, plus the spare pods when the layout is the active one
+func (c *latencyController) layoutMinScale(ci CompositionInfo, active, boost bool) int {
+	minScale := 1
+	if boost {
+		minScale = ci.RequiredReplicas
+	}
+	if active {
+		minScale += c.spareFor(ci)
+	}
+	return minScale
 }
 
 // adaptStandby boosts the standby of the next larger layout when the arrival rate gets close to the

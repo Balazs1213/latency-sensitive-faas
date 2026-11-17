@@ -93,7 +93,7 @@ func main() {
 	controller = core.NewController(composer, metricsReader, scenarioManager,
 		time.Duration(conf.ControllerTickDelaySeconds)*time.Second, conf.DeployNamespace,
 		conf.AvailableNodeMemoryGb, core.MetricType(conf.ControllerMetricType),
-		conf.ControllerMetricQueryTimeRange, conf.LatencyDowngradeFactor, conf.PrewarmMode, conf.TargetUtilization, conf.BoostRateFactor, conf.SwitchRateFactor, conf.MeasuredCapacity, conf.RateForecast, conf.BackupLayout)
+		conf.ControllerMetricQueryTimeRange, conf.LatencyDowngradeFactor, conf.PrewarmMode, conf.TargetUtilization, conf.BoostRateFactor, conf.SwitchRateFactor, conf.MeasuredCapacity, conf.RateForecast, conf.BackupLayout, conf.SparePods, conf.SparePodCount)
 
 	if !conf.LocalMode {
 		go func() {

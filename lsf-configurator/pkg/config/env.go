@@ -69,6 +69,11 @@ type Configuration struct {
 	// Backup layout when a node of the active layout is not available (not ready, cordoned or marked overloaded with
 	// the lsf-configurator/overloaded annotation): "off", or "cold" (the backup is deployed when it is needed)
 	BackupLayout string `env:"BACKUP_LAYOUT" default:"off"`
+	// Spare pods on top of the pods a composition of the active layout needs, so that losing a pod does not stop it:
+	// "single" (only the compositions planned for a single pod), "all" (every composition) or "off"
+	SparePods string `env:"SPARE_PODS" default:"single"`
+	// Number of spare pods per composition that gets them
+	SparePodCount int `env:"SPARE_POD_COUNT" default:"1"`
 }
 
 // Init loads the .env file if there is one and fills a Configuration from the environment. It exits the process
