@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 
 import requests
 
+# Files of the frames folder that are sent as camera frames; anything else in the folder (scripts, notes) is skipped
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp")
 
 def parse_profile(text):
     """Parse 'dur:rate' or 'dur:start-end' segments, e.g. '60:2,120:2-14,120:14'."""
@@ -54,8 +56,11 @@ def main():
     args = p.parse_args()
 
     template = json.load(open(args.template))
-    frames = [base64.b64encode(open(f, "rb").read()).decode()
-              for f in sorted(glob.glob(os.path.join(args.frames, "*")))]
+    frame_files = [f for f in sorted(glob.glob(os.path.join(args.frames, "*")))
+                   if f.lower().endswith(IMAGE_EXTENSIONS)]
+    if not frame_files:
+        raise SystemExit(f"no camera frames ({', '.join(IMAGE_EXTENSIONS)}) in {args.frames}")
+    frames = [base64.b64encode(open(f, "rb").read()).decode() for f in frame_files]
     times = schedule(parse_profile(args.profile))
     headers = {"Host": args.host, "Content-Type": "application/json",
                "X-Forward-To": "detect-track-service"}

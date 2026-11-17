@@ -7,7 +7,8 @@ Trace columns (traces.csv): complete traces that started in the bin, their p95 a
 many exceeded the latency limit, and how many traces started in the bin but never completed.
 
 At the end, the outcome of all requests: completed within / above the limit, accepted (HTTP 200) but never
-completed, rejected at the entry (no response or an error other than HTTP 500) and the background HTTP 500 loss.
+completed, rejected at the entry (no response or an error other than HTTP 500) and HTTP 500 (an error in a
+component of the app).
 
 Usage: fault_timeline.py RUN_DIR [BIN_S] [FAULT_S] [LIMIT_MS]
 """
@@ -68,4 +69,4 @@ row("completed within the limit", within)
 row("completed above the limit", len(complete) - within)
 row("accepted (HTTP 200) but not completed", max(0, accepted - len(complete)))
 row("rejected at the entry (no response, HTTP 502/503/...)", rejected)
-row("HTTP 500 (the usual background loss)", statuses.get("500", 0))
+row("HTTP 500 (an error in a component)", statuses.get("500", 0))
