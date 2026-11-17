@@ -93,3 +93,9 @@ type ScaleClient interface {
 	ReadyPods(ctx context.Context, namespace, serviceName string) (int, error)
 	RepairRevision(ctx context.Context, namespace, serviceName string) (bool, error)
 }
+
+// NodeClient tells which nodes of the cluster can take the deployments of a layout.
+type NodeClient interface {
+	// NodeAvailability returns every node and whether it is available: ready, schedulable and not marked overloaded
+	NodeAvailability(ctx context.Context) (map[string]bool, error)
+}

@@ -72,13 +72,13 @@ func main() {
 		log.Fatalf("failed to create metrics reader: %v", err)
 	}
 
-	dnsClient, err := kubeclient.NewKubeclient()
+	kubeClient, err := kubeclient.NewKubeclient()
 	if err != nil {
-		log.Fatalf("failed to create DNS client: %v", err)
+		log.Fatalf("failed to create Kubernetes client: %v", err)
 	}
 
 	composer = core.NewComposer(functionAppRepo, fcRepo, deploymentRepo, routingClient,
-		knClient, tektonBuilder, metricsReader, dnsClient, dnsClient)
+		knClient, tektonBuilder, metricsReader, kubeClient, kubeClient, kubeClient)
 
 	err = filesystem.CreateDir(conf.UploadDir)
 	if err != nil {

@@ -38,6 +38,7 @@ type Composer struct {
 	builder            Builder
 	dnsClient          DNSClient
 	scaleClient        ScaleClient
+	nodeClient         NodeClient
 	functionAppRepo    FunctionAppRepository
 	fcRepo             FunctionCompositionRepository
 	deploymentRepo     DeploymentRepository
@@ -57,6 +58,7 @@ func NewComposer(
 	metricsReader MetricsReader,
 	dnsClient DNSClient,
 	scaleClient ScaleClient,
+	nodeClient NodeClient,
 ) *Composer {
 	scheduler := NewScheduler(WorkerPoolSize, QueueSize)
 	return &Composer{
@@ -66,6 +68,7 @@ func NewComposer(
 		builder:         builder,
 		dnsClient:       dnsClient,
 		scaleClient:     scaleClient,
+		nodeClient:      nodeClient,
 		functionAppRepo: functionAppRepo,
 		fcRepo:          fcRepo,
 		deploymentRepo:  deploymentRepo,
@@ -232,6 +235,11 @@ func (c *Composer) DeploymentReadyPods(dep *Deployment) (int, error) {
 // RepairDeploymentRevision replaces the broken revision of a deployment and reports whether it did
 func (c *Composer) RepairDeploymentRevision(dep *Deployment) (bool, error) {
 	return c.scaleClient.RepairRevision(context.TODO(), dep.Namespace, dep.Id)
+}
+
+// NodeAvailability returns every node of the cluster and whether it can take new deployments
+func (c *Composer) NodeAvailability() (map[string]bool, error) {
+	return c.nodeClient.NodeAvailability(context.TODO())
 }
 
 // UpdateDNSRecord points the DNS record of an app's entry point to the given deployment.

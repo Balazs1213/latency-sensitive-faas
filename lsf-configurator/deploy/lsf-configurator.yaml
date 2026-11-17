@@ -36,6 +36,11 @@ rules:
     resources: ["podautoscalers"]
     verbs: ["get", "patch"]
 
+  # Nodes (whether a node can take the deployments of a layout: ready, schedulable, not marked overloaded)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+
   # Istio VirtualService API
   - apiGroups: ["networking.istio.io"]
     resources: ["virtualservices", "envoyfilters"]
