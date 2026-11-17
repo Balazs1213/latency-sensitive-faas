@@ -25,6 +25,29 @@ matplotlib.use("Agg")  # no display on the VM, write PNG only
 import matplotlib.pyplot as plt
 import numpy as np
 
+# Experiment folders of the nights before the current folder layout, under their current names: the nights before
+# 2026-11-17 had no protection level, the pilots of 2026-11-17 had <without-backup|with-backup>/ under the group
+LEGACY_EXPERIMENTS = {
+    "2-faults/1-pod-loss-with-spare": "2-faults/1-pod-loss/without-spare-pods/1-detect-pod-of-many",
+    "2-faults/2-pod-loss-single-replica": "2-faults/1-pod-loss/without-spare-pods/2-fusion-only-pod",
+    "2-faults/3-node-loss-90s": "2-faults/2-node-unavailable/without-backup-layout/1-node-loss-90s",
+    "3-overload/4-node-overload-simulated-90s":
+        "2-faults/2-node-unavailable/without-backup-layout/2-node-overload-simulated-90s",
+}
+
+
+def experiment_name(parts):
+    """Current name (<group>/<experiment path>) of the experiment of a run folder, given without repN"""
+    backup = parts[1] if len(parts) > 2 and parts[1] in ("without-backup", "with-backup") else None
+    if backup:
+        parts = [parts[0]] + parts[2:]
+    name = "/".join(parts)
+    name = LEGACY_EXPERIMENTS.get(name, name)
+    if backup == "with-backup":
+        name = name.replace("/without-backup-layout/", "/with-backup-layout/")
+    return name
+
+
 CONFIGS = ["1-baseline-original", "2-full-prewarm", "3-proactive-early-switch", "4-follow-rate",
            "5-follow-rate-forecast"]
 SHORT = {"1-baseline-original": "baseline", "2-full-prewarm": "full", "3-proactive-early-switch": "proactive",
@@ -144,10 +167,8 @@ def main():
                 if rel[0] == "1-normal-operation":
                     info.update(profile=rel[1], config=rel[2])
                 else:
-                    # <group>/<without-backup|with-backup>/<experiment>/repN; nights before the backup layout had
-                    # no such level: their experiments ran without it
-                    middle = rel[1:-1] if rel[1] in ("without-backup", "with-backup") else ["without-backup"] + rel[1:-1]
-                    info.update(profile="/".join(middle), config="5-follow-rate-forecast")
+                    group, experiment = experiment_name(rel[:-1]).split("/", 1)
+                    info.update(group=group, profile=experiment, config="5-follow-rate-forecast")
                 info.update(whole_run(run))
                 info["phases"] = read_phases(run)
                 info.update(outcomes(run))
