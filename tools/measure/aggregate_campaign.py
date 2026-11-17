@@ -144,7 +144,10 @@ def main():
                 if rel[0] == "1-normal-operation":
                     info.update(profile=rel[1], config=rel[2])
                 else:
-                    info.update(profile=rel[1], config="5-follow-rate-forecast")
+                    # <group>/<without-backup|with-backup>/<experiment>/repN; nights before the backup layout had
+                    # no such level: their experiments ran without it
+                    middle = rel[1:-1] if rel[1] in ("without-backup", "with-backup") else ["without-backup"] + rel[1:-1]
+                    info.update(profile="/".join(middle), config="5-follow-rate-forecast")
                 info.update(whole_run(run))
                 info["phases"] = read_phases(run)
                 info.update(outcomes(run))

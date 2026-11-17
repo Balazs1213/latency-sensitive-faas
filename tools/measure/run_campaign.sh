@@ -5,14 +5,15 @@
 # Usage (from anywhere):
 #   bash tools/measure/run_campaign.sh                      everything, resumable (a run with a DONE file is skipped)
 #   DRY=1 bash tools/measure/run_campaign.sh                only the environment checks, no measurement
-#   ONLY=2-faults/2-pod-loss-single-replica bash ...       one experiment (all its repetitions), e.g. as a pilot
+#   ONLY=2-faults/with-backup/3-node-loss-90s bash ...    one experiment (all its repetitions), e.g. as a pilot
 #   ONLY=1-normal-operation/ramp-4min/1-baseline-original bash ...
 #
 # Output (the same every day): $ROOT, by default ~/thesis/measurements/thesis-final/<date>/
 #   README.txt  what each folder contains            code.txt     commit and image (written by nightly_campaign.sh)
 #   summary.txt one line per run                     campaign.log progress
 #   1-normal-operation/<profile>/<N-configuration>/repN/
-#   2-faults/<N-experiment>/repN/      3-overload/<N-experiment>/repN/     (in the follow-forecast configuration)
+#   2-faults/<without-backup|with-backup>/<N-experiment>/repN/      (in the follow-forecast configuration; with-backup:
+#   3-overload/<without-backup|with-backup>/<N-experiment>/repN/     BACKUP_LAYOUT=cold, only with an unavailable node)
 #   configs/<configuration>/           config.txt and use_config.sh output of the last switch to it
 # Every run folder: phases.txt, phases.csv, plots/, run.png, config.txt, traces.csv, loadgen.csv, controller.log;
 # the fault and overload runs also fault.txt (when and what was injected) and fault_timeline.txt (request outcomes).
@@ -41,46 +42,56 @@ PROFILE[steps-24min]="60:1,60:3,60:6,60:9,60:12,120:14,60:9,60:5,360:1,180:10,36
 PHASES[steps-24min]="warm-up:0-60,staircase up:60-420,staircase down:420-540,quiet 1:540-900,sudden jump:900-1080,quiet 2:1080-1440"
 PROFILES=(ramp-4min steps-24min)
 
-# Fault and overload experiments: folder -> profile, phases, loadgen options, fault delay (s), fault command.
+# Fault and overload experiments, in the final configuration, without and with the backup layout (BACKUP_LAYOUT=cold).
+# The backup only reacts to an unavailable node (not ready, cordoned or marked overloaded), so the with-backup
+# folders hold the experiments with such a node; the numbers are the same in both, so the pairs line up.
 # The command runs in the repository; deployment ids and node names are looked up when the fault is injected.
 FAULT_PROFILE="30:2,60:2-14,210:14"
 FAULT_PHASES="idle:0-30,ramp up:30-90,before the fault:90-180,fault:180-270,after the fault:270-300"
+NODE_PROFILE="30:2,60:2-14,330:14"   # long enough to see the node coming back
 FUSION=position-service,ru-fusion-service
 DETECT=detect-track-service
-declare -A E_PROFILE E_PHASES E_LOADGEN E_DELAY E_CMD E_TEXT
-EXPERIMENTS=(2-faults/1-pod-loss-with-spare 2-faults/2-pod-loss-single-replica 2-faults/3-node-loss-90s
-             3-overload/1-cpu-noisy-neighbour-pod 3-overload/2-cpu-whole-host-90s 3-overload/3-requests-30rps-open-loop)
+FUSION_NODE="N=\$(python tools/measure/deployment_id.py --components $FUSION --field node)"
+BACKUP_CONFIG=5-follow-rate-forecast-backup-cold
+declare -A E_CONFIG E_PROFILE E_PHASES E_LOADGEN E_DELAY E_CMD E_TEXT
+EXPERIMENTS=()   # in run order: the experiments without the backup first, so the configuration switches only once
 
-e=2-faults/1-pod-loss-with-spare
-E_TEXT[$e]="H1a: one of the detect pods is deleted at 180 s; the other pods are a spare"
-E_PROFILE[$e]=$FAULT_PROFILE; E_PHASES[$e]=$FAULT_PHASES; E_LOADGEN[$e]=""; E_DELAY[$e]=180
-E_CMD[$e]="kubectl delete \$(kubectl get pods -n $NS -l serving.knative.dev/service=\$(python tools/measure/deployment_id.py --components $DETECT) -o name | head -1) -n $NS --wait=false"
+# experiment <folder> <configuration> <profile> <phases> <loadgen options> <fault delay s> <fault command> <text>
+experiment() {
+  EXPERIMENTS+=("$1")
+  E_CONFIG[$1]=$2; E_PROFILE[$1]=$3; E_PHASES[$1]=$4; E_LOADGEN[$1]=$5; E_DELAY[$1]=$6; E_CMD[$1]=$7; E_TEXT[$1]=$8
+}
 
-e=2-faults/2-pod-loss-single-replica
-E_TEXT[$e]="H1b: the only position+fusion pod is deleted at 180 s; there is no spare, Kubernetes restarts it"
-E_PROFILE[$e]=$FAULT_PROFILE; E_PHASES[$e]=$FAULT_PHASES; E_LOADGEN[$e]=""; E_DELAY[$e]=180
-E_CMD[$e]="kubectl delete pod -n $NS -l serving.knative.dev/service=\$(python tools/measure/deployment_id.py --components $FUSION) --wait=false"
-
-e=2-faults/3-node-loss-90s
-E_TEXT[$e]="H2: the node of the position+fusion pod is lost for 90 s from 180 s (emulated: cordon and pod deletion, then uncordon)"
-E_PROFILE[$e]="30:2,60:2-14,330:14"; E_LOADGEN[$e]="--workers 1024"; E_DELAY[$e]=180
-E_PHASES[$e]="idle:0-30,ramp up:30-90,before the fault:90-180,node lost:180-270,node back:270-420"
-E_CMD[$e]="N=\$(python tools/measure/deployment_id.py --components $FUSION --field node); kubectl cordon \$N && kubectl delete pod -n $NS -l serving.knative.dev/service=\$(python tools/measure/deployment_id.py --components $FUSION) --wait=false; sleep 90; kubectl uncordon \$N"
-
-e=3-overload/1-cpu-noisy-neighbour-pod
-E_TEXT[$e]="T2a: a BestEffort pod with 16 busy threads runs for 90 s from 180 s on the node of the detect pods"
-E_PROFILE[$e]=$FAULT_PROFILE; E_PHASES[$e]=$FAULT_PHASES; E_LOADGEN[$e]=""; E_DELAY[$e]=180
-E_CMD[$e]="kubectl delete -f $HOME/thesis/cpu-stress.yaml --ignore-not-found --wait=true; kubectl apply -f $HOME/thesis/cpu-stress.yaml"
-
-e=3-overload/2-cpu-whole-host-90s
-E_TEXT[$e]="T2b: 24 busy threads on the whole machine (all nodes share it) for 90 s from 180 s"
-E_PROFILE[$e]=$FAULT_PROFILE; E_PHASES[$e]=$FAULT_PHASES; E_LOADGEN[$e]=""; E_DELAY[$e]=180
-E_CMD[$e]="$HOME/thesis/host-cpu-stress.sh 24 90"
-
-e=3-overload/3-requests-30rps-open-loop
-E_TEXT[$e]="T1b: the request rate rises to 30/s, above the capacity; 1024 sender threads, so the sender does not slow down"
-E_PROFILE[$e]="30:2,60:2-14,60:14,30:14-30,120:30"; E_LOADGEN[$e]="--workers 1024"; E_DELAY[$e]=""; E_CMD[$e]=""
-E_PHASES[$e]="idle:0-30,ramp up:30-90,14 per s:90-150,ramp to 30:150-180,30 per s:180-300"
+for b in without-backup with-backup; do
+  cfg=$FAULT_CONFIG; [ $b = with-backup ] && cfg=$BACKUP_CONFIG
+  if [ $b = without-backup ]; then
+    experiment 2-faults/$b/1-pod-loss-with-spare "$cfg" "$FAULT_PROFILE" "$FAULT_PHASES" "" 180 \
+      "kubectl delete \$(kubectl get pods -n $NS -l serving.knative.dev/service=\$(python tools/measure/deployment_id.py --components $DETECT) -o name | head -1) -n $NS --wait=false" \
+      "H1a: one of the detect pods is deleted at 180 s; the other pods are a spare"
+    experiment 2-faults/$b/2-pod-loss-single-replica "$cfg" "$FAULT_PROFILE" "$FAULT_PHASES" "" 180 \
+      "kubectl delete pod -n $NS -l serving.knative.dev/service=\$(python tools/measure/deployment_id.py --components $FUSION) --wait=false" \
+      "H1b: the only position+fusion pod is deleted at 180 s; there is no spare, Kubernetes restarts it"
+  fi
+  experiment 2-faults/$b/3-node-loss-90s "$cfg" "$NODE_PROFILE" \
+    "idle:0-30,ramp up:30-90,before the fault:90-180,node lost:180-270,node back:270-420" "--workers 1024" 180 \
+    "$FUSION_NODE; kubectl cordon \$N && kubectl delete pod -n $NS -l serving.knative.dev/service=\$(python tools/measure/deployment_id.py --components $FUSION) --wait=false; sleep 90; kubectl uncordon \$N" \
+    "H2: the node of the position+fusion pod is lost for 90 s from 180 s (emulated: cordon and pod deletion, then uncordon)"
+  if [ $b = without-backup ]; then
+    experiment 3-overload/$b/1-cpu-noisy-neighbour-pod "$cfg" "$FAULT_PROFILE" "$FAULT_PHASES" "" 180 \
+      "kubectl delete -f $HOME/thesis/cpu-stress.yaml --ignore-not-found --wait=true; kubectl apply -f $HOME/thesis/cpu-stress.yaml" \
+      "T2a: a BestEffort pod with 16 busy threads runs for 90 s from 180 s on the node of the detect pods"
+    experiment 3-overload/$b/2-cpu-whole-host-90s "$cfg" "$FAULT_PROFILE" "$FAULT_PHASES" "" 180 \
+      "$HOME/thesis/host-cpu-stress.sh 24 90" \
+      "T2b: 24 busy threads on the whole machine (all nodes share it) for 90 s from 180 s"
+    experiment 3-overload/$b/3-requests-30rps-open-loop "$cfg" "30:2,60:2-14,60:14,30:14-30,120:30" \
+      "idle:0-30,ramp up:30-90,14 per s:90-150,ramp to 30:150-180,30 per s:180-300" "--workers 1024" "" "" \
+      "T1b: the request rate rises to 30/s, above the capacity; 1024 sender threads, so the sender does not slow down"
+  fi
+  experiment 3-overload/$b/4-node-overload-simulated-90s "$cfg" "$NODE_PROFILE" \
+    "idle:0-30,ramp up:30-90,before the fault:90-180,node marked:180-270,mark removed:270-420" "--workers 1024" 180 \
+    "$FUSION_NODE; kubectl annotate node \$N lsf-configurator/overloaded=true --overwrite; sleep 90; kubectl annotate node \$N lsf-configurator/overloaded-" \
+    "H3: the node of the position+fusion pod is marked overloaded for 90 s from 180 s (simulated: the node is not loaded)"
+done
 
 mkdir -p "$ROOT"
 LOG=$ROOT/campaign.log
@@ -248,6 +259,7 @@ switch_config() {  # applies a configuration (folder name); configs/<config>/ ke
     3-proactive-early-switch) RATE_FORECAST=false tools/measure/use_config.sh proactive "$dir" ;;
     4-follow-rate)            RATE_FORECAST=false tools/measure/use_config.sh follow "$dir" ;;
     5-follow-rate-forecast)   RATE_FORECAST=true  tools/measure/use_config.sh follow "$dir" ;;
+    5-follow-rate-forecast-backup-cold) BACKUP_LAYOUT=cold RATE_FORECAST=true tools/measure/use_config.sh follow "$dir" ;;
   esac > "$dir/use_config.log" 2>&1
   [ "$1" = 1-baseline-original ] && reset_baseline_min_scale
   CURRENT_CONFIG=$1
@@ -324,11 +336,13 @@ write_readme() {
     echo "    4-follow-rate             the warm pods follow the measured rate; switches up and down on the rate"
     echo "    5-follow-rate-forecast    as 4, sized for the forecast rate"
     echo
-    echo "2-faults/ and 3-overload/: in the 5-follow-rate-forecast configuration; fault.txt says when and what was"
-    echo "injected, fault_timeline.txt per 10 s and the outcome of all requests."
+    echo "2-faults/ and 3-overload/: in the 5-follow-rate-forecast configuration, without-backup/ as it is, with-backup/"
+    echo "with the backup layout away from unavailable nodes (BACKUP_LAYOUT=cold); only the experiments with an"
+    echo "unavailable node are in with-backup/, with the same numbers. fault.txt says when and what was injected,"
+    echo "fault_timeline.txt per 10 s and the outcome of all requests."
     for e in "${EXPERIMENTS[@]}"; do
-      printf '  %-40s %s\n' "$e" "${E_TEXT[$e]}"
-      printf '  %-40s profile %s\n' "" "${E_PROFILE[$e]}"
+      printf '  %-56s %s\n' "$e" "${E_TEXT[$e]}"
+      printf '  %-56s profile %s\n' "" "${E_PROFILE[$e]}"
     done
   } > "$ROOT/README.txt"
 }
@@ -381,11 +395,12 @@ for e in "${EXPERIMENTS[@]}"; do
     rel=$e/rep$rep
     wanted "$rel" || continue
     [ -f "$ROOT/$rel/DONE" ] && { log "skip $rel (done)"; continue; }
-    switch_config "$FAULT_CONFIG"
+    switch_config "${E_CONFIG[$e]}"
     run_one "$rel" "${E_PROFILE[$e]}" "${E_PHASES[$e]}" "${E_LOADGEN[$e]}" "${E_DELAY[$e]}" "${E_CMD[$e]}"
   done
 done
 
 uncordon_nodes
+switch_config "$FAULT_CONFIG"   # leave the cluster without the backup layout, as the next campaign expects
 write_summary
 log "campaign finished"

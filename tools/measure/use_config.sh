@@ -13,6 +13,8 @@ DEV_IMAGE=${DEV_IMAGE:-lsf-configurator:dev-$(git log -1 --format=%h -- lsf-conf
 MEASURED=${MEASURED_CAPACITY:-false}
 # Rate forecast in the rate following: set RATE_FORECAST=true before the command
 FORECAST=${RATE_FORECAST:-false}
+# Backup layout away from unavailable nodes: set BACKUP_LAYOUT=cold before the command (default off)
+BACKUP=${BACKUP_LAYOUT:-off}
 
 config=${1:?"usage: use_config.sh <baseline|off|one|full|adaptive|proactive|follow> [run_dir]"}
 run_dir=${2:-}
@@ -21,7 +23,7 @@ run_dir=${2:-}
 # setting is left over from the previous configuration), then wait until the new configurator pod runs
 apply() {
   kubectl set image -n "$NS" "$DEPLOY" "$CONTAINER=$1" >/dev/null
-  kubectl set env -n "$NS" "$DEPLOY" PREWARM_MODE="$2" SWITCH_RATE_FACTOR="$3" MEASURED_CAPACITY="$MEASURED" RATE_FORECAST="$FORECAST" >/dev/null
+  kubectl set env -n "$NS" "$DEPLOY" PREWARM_MODE="$2" SWITCH_RATE_FACTOR="$3" MEASURED_CAPACITY="$MEASURED" RATE_FORECAST="$FORECAST" BACKUP_LAYOUT="$BACKUP" >/dev/null
   kubectl rollout status -n "$NS" "$DEPLOY" --timeout=400s
 }
 
@@ -61,7 +63,7 @@ summary() {
   echo "digest: $(kubectl get pods -n "$NS" -l app=lsf-configurator --sort-by=.metadata.creationTimestamp \
     -o jsonpath='{.items[-1:].status.containerStatuses[0].imageID}')"
   echo "env:"
-  kubectl set env -n "$NS" "$DEPLOY" --list | grep -E "PREWARM|BOOST|SWITCH|MEASURED|FORECAST|TARGET_|MCPU|METRIC|TICK" | sed 's/^/  /'
+  kubectl set env -n "$NS" "$DEPLOY" --list | grep -E "PREWARM|BOOST|SWITCH|MEASURED|FORECAST|BACKUP|TARGET_|MCPU|METRIC|TICK" | sed 's/^/  /'
   echo "knative services:"
   kubectl get ksvc -n application --no-headers | awk '{print "  " $1 "  ready=" $5}'
   echo "pods:"
