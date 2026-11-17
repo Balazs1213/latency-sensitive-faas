@@ -111,8 +111,8 @@ func NewController(composer *Composer, metrics MetricsReader, scenarioManager Sc
 	if backupLayout != "cold" {
 		backupLayout = "off"
 	}
-	if sparePodMode != SparePodsOff && sparePodMode != SparePodsAll {
-		sparePodMode = SparePodsSingle
+	if sparePodMode != SparePodsSingle && sparePodMode != SparePodsAll {
+		sparePodMode = SparePodsOff
 	}
 	if sparePodCount < 0 {
 		sparePodCount = 0
