@@ -19,6 +19,12 @@ var (
 	revisionResource = schema.GroupVersionResource{Group: "serving.knative.dev", Version: "v1", Resource: "revisions"}
 )
 
+// Knative autoscaling annotations, on the PodAutoscaler of a revision
+const (
+	minScaleAnnotation = "autoscaling.knative.dev/min-scale"
+	maxScaleAnnotation = "autoscaling.knative.dev/max-scale"
+)
+
 // latestRevision returns the latest ready revision of a Knative service; its PodAutoscaler has the same name
 func (c *Client) latestRevision(ctx context.Context, namespace, serviceName string) (string, error) {
 	ksvc, err := c.dynamic.Resource(ksvcResource).Namespace(namespace).Get(ctx, serviceName, metav1.GetOptions{})
@@ -35,26 +41,29 @@ func (c *Client) latestRevision(ctx context.Context, namespace, serviceName stri
 // SetMinScale changes the min-scale of a Knative service on the PodAutoscaler of its latest ready revision.
 // Changing the annotation on the service template would roll out a new revision, and Knative does not enforce
 // min-scale on a revision until it becomes routable, so the new pods could be scaled away right before a switch.
+// A min-scale above the max-scale (e.g. a spare pod for a composition planned for one pod) raises the max-scale to
+// it, otherwise Knative would keep the pods at the max-scale.
 func (c *Client) SetMinScale(ctx context.Context, namespace, serviceName string, minScale int) error {
 	revision, err := c.latestRevision(ctx, namespace, serviceName)
 	if err != nil {
 		return err
 	}
-
-	patch := map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"annotations": map[string]string{
-				"autoscaling.knative.dev/min-scale": strconv.Itoa(minScale),
-			},
-		},
+	autoscalers := c.dynamic.Resource(paResource).Namespace(namespace)
+	pa, err := autoscalers.Get(ctx, revision, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get podautoscaler %s/%s: %w", namespace, revision, err)
 	}
-	body, err := json.Marshal(patch)
+
+	annotations := map[string]string{minScaleAnnotation: strconv.Itoa(minScale)}
+	// A missing or zero max-scale means no upper limit
+	if maxScale, err := strconv.Atoi(pa.GetAnnotations()[maxScaleAnnotation]); err == nil && maxScale > 0 && minScale > maxScale {
+		annotations[maxScaleAnnotation] = strconv.Itoa(minScale)
+	}
+	body, err := json.Marshal(map[string]interface{}{"metadata": map[string]interface{}{"annotations": annotations}})
 	if err != nil {
 		return fmt.Errorf("failed to marshal min-scale patch: %w", err)
 	}
-
-	_, err = c.dynamic.Resource(paResource).Namespace(namespace).Patch(ctx, revision, types.MergePatchType, body, metav1.PatchOptions{})
-	if err != nil {
+	if _, err := autoscalers.Patch(ctx, revision, types.MergePatchType, body, metav1.PatchOptions{}); err != nil {
 		return fmt.Errorf("failed to set min-scale of %s/%s to %d: %w", namespace, revision, minScale, err)
 	}
 	return nil
