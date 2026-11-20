@@ -53,6 +53,7 @@ PROFILES=(ramp-4min steps-24min)
 # without-/with- pair that differs in one protection only:
 #   1-pod-loss/with-spare-pods/            SPARE_PODS=single: a spare pod for the compositions planned for one pod
 #   2-node-unavailable/with-backup-layout/  BACKUP_LAYOUT=cold: the compositions move away from an unavailable node
+#   2-node-unavailable/with-warm-backup-layout/  BACKUP_LAYOUT=warm: as cold, from one pod kept ready on that node
 # 3-overload/ has no protection yet. The command runs in the repository; deployment ids and node names are looked
 # up when the fault is injected.
 FAULT_PROFILE="30:2,60:2-14,210:14"
@@ -63,8 +64,9 @@ DETECT=detect-track-service
 FUSION_NODE="N=\$(python tools/measure/deployment_id.py --components $FUSION --field node)"
 SPARE_CONFIG=5-follow-rate-forecast-spare-pods
 BACKUP_CONFIG=5-follow-rate-forecast-backup-cold
+WARM_CONFIG=5-follow-rate-forecast-backup-warm
 declare -A E_CONFIG E_PROFILE E_PHASES E_LOADGEN E_DELAY E_CMD E_TEXT
-EXPERIMENTS=()   # in run order, grouped by configuration, so the configuration switches only twice
+EXPERIMENTS=()   # in run order, grouped by configuration, so the configuration switches only three times
 
 # experiment <folder> <configuration> <profile> <phases> <loadgen options> <fault delay s> <fault command> <text>
 experiment() {
@@ -109,6 +111,7 @@ experiment 3-overload/3-requests-30rps-open-loop "$FAULT_CONFIG" "30:2,60:2-14,6
   "T1b: the request rate rises to 30/s, above the capacity; 1024 sender threads, so the sender does not slow down"
 pod_loss with-spare-pods "$SPARE_CONFIG"
 node_unavailable with-backup-layout "$BACKUP_CONFIG"
+node_unavailable with-warm-backup-layout "$WARM_CONFIG"
 
 mkdir -p "$ROOT"
 LOG=$ROOT/campaign.log
@@ -278,6 +281,7 @@ switch_config() {  # applies a configuration (folder name); configs/<config>/ ke
     5-follow-rate-forecast)   RATE_FORECAST=true  tools/measure/use_config.sh follow "$dir" ;;
     5-follow-rate-forecast-spare-pods)  SPARE_PODS=single RATE_FORECAST=true tools/measure/use_config.sh follow "$dir" ;;
     5-follow-rate-forecast-backup-cold) BACKUP_LAYOUT=cold RATE_FORECAST=true tools/measure/use_config.sh follow "$dir" ;;
+    5-follow-rate-forecast-backup-warm) BACKUP_LAYOUT=warm RATE_FORECAST=true tools/measure/use_config.sh follow "$dir" ;;
   esac > "$dir/use_config.log" 2>&1
   [ "$1" = 1-baseline-original ] && reset_baseline_min_scale
   CURRENT_CONFIG=$1
@@ -364,7 +368,8 @@ write_readme() {
     echo "2-faults/ and 3-overload/: in the 5-follow-rate-forecast configuration. In 2-faults/ every fault has a"
     echo "without-/with- pair that differs in one protection only: with-spare-pods/ SPARE_PODS=single (a spare pod for"
     echo "the compositions planned for one pod), with-backup-layout/ BACKUP_LAYOUT=cold (the compositions move away"
-    echo "from an unavailable node). 3-overload/ has no protection yet. fault.txt says when and what was injected,"
+    echo "from an unavailable node; deployed when needed), with-warm-backup-layout/ BACKUP_LAYOUT=warm (the same, from"
+    echo "one pod kept ready on the backup node). 3-overload/ has no protection yet. fault.txt says when and what was injected,"
     echo "fault_timeline.txt per 10 s and the outcome of all requests."
     for e in "${EXPERIMENTS[@]}"; do
       printf '  %-80s %s\n' "$e" "${E_TEXT[$e]}"

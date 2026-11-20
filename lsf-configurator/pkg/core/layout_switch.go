@@ -377,13 +377,25 @@ func (c *latencyController) logReconfigComplete(appID string) {
 }
 
 // prewarmKeepKeys returns the deployments (fcId@node) to keep after a switch: with prewarm every deployment
-// of any layout candidate, so that the previously active layout stays warm for the next switch
+// of any layout candidate, so that the previously active layout stays warm for the next switch, and the warm
+// backups of the warm backup layout
 func (c *latencyController) prewarmKeepKeys(app *FunctionApp, fcByKey map[string]*FunctionComposition) map[string]bool {
-	keepKeys := make(map[string]bool)
-	if c.prewarmMode == "off" {
-		return keepKeys
+	keepKeys := c.layoutKeepKeys(app, fcByKey, false)
+	for key := range c.warmKeepKeys(app.Id) {
+		keepKeys[key] = true
 	}
-	for _, candidate := range app.LayoutCandidates {
+	return keepKeys
+}
+
+// layoutKeepKeys returns the deployments (fcId@node) that the layouts keep: with prewarm every layout candidate's,
+// otherwise none, or only the active layout's when withActive is set
+func (c *latencyController) layoutKeepKeys(app *FunctionApp, fcByKey map[string]*FunctionComposition, withActive bool) map[string]bool {
+	keepKeys := make(map[string]bool)
+	for key, candidate := range app.LayoutCandidates {
+		keptAsActive := withActive && key == app.ActiveLayoutKey
+		if c.prewarmMode == "off" && !keptAsActive {
+			continue
+		}
 		for node, ci := range candidate {
 			if fc, ok := fcByKey[compositionKey(ci)]; ok {
 				keepKeys[fc.Id+"@"+node] = true

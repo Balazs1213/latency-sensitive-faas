@@ -67,7 +67,8 @@ type Configuration struct {
 	// Rate following: size the pods for the arrival rate expected when a pod requested now becomes ready
 	RateForecast bool `env:"RATE_FORECAST" default:"false"`
 	// Backup layout when a node of the active layout is not available (not ready, cordoned or marked overloaded with
-	// the lsf-configurator/overloaded annotation): "off", or "cold" (the backup is deployed when it is needed)
+	// the lsf-configurator/overloaded annotation): "off", "cold" (the backup is deployed when it is needed) or "warm"
+	// (one pod of every composition of the active layout is kept ready on the node its backup would move it to)
 	BackupLayout string `env:"BACKUP_LAYOUT" default:"off"`
 	// Spare pods on top of the pods a composition of the active layout needs, so that losing a pod does not stop it:
 	// "off" (default), "single" (only the compositions planned for a single pod) or "all" (every composition)

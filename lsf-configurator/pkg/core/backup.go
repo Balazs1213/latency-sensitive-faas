@@ -74,7 +74,7 @@ func sortedNodes(layout Layout) []string {
 // available again, once per metric window; only with a backup layout mode
 func (c *latencyController) followNodeAvailability(apps []*FunctionApp) {
 	now := time.Now()
-	if c.backupLayout == "off" || now.Sub(c.lastNodeCheck) < c.metricWindow {
+	if c.backupLayout == BackupOff || now.Sub(c.lastNodeCheck) < c.metricWindow {
 		return
 	}
 	c.lastNodeCheck = now
@@ -92,12 +92,15 @@ func (c *latencyController) followNodeAvailability(apps []*FunctionApp) {
 			c.returnFromBackup(app, original, available)
 		} else if usesUnavailableNode(app.LayoutCandidates[app.ActiveLayoutKey], available) {
 			c.switchToBackup(app, available)
+		} else {
+			c.ensureWarmBackups(app, available)
 		}
 	}
 }
 
 // switchToBackup adds the backup of the active layout as a layout candidate and switches to it: its deployments
-// on the new nodes are created now (cold), and the traffic moves once they are ready
+// on the new nodes are created now (cold) or reused from the warm backups (warm), and the traffic moves once they
+// are ready
 func (c *latencyController) switchToBackup(app *FunctionApp, available map[string]bool) {
 	backup := relocateLayout(app.LayoutCandidates[app.ActiveLayoutKey], available)
 	if backup == nil {
@@ -120,6 +123,7 @@ func (c *latencyController) returnFromBackup(app *FunctionApp, original string, 
 		return
 	}
 	delete(app.LayoutCandidates, app.ActiveLayoutKey)
+	c.forgetWarmBackups(app.Id) // the warm backups that served are set back to one pod by the next check
 	logPhase(app.Id, "backup_return", original, "", 0)
 	log.Printf("Nodes of layout %s of app %s are available again, switching back from the backup", original, app.Id)
 	c.switchTo(app, original)
