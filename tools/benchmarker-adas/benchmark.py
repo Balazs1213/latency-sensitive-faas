@@ -9,6 +9,9 @@ from typing import Any, List, Dict, Tuple
 import psutil
 from pathlib import Path
 import os
+import argparse
+import base64
+import copy
 
 # -------------------------------------------------------------------
 # Config
@@ -173,17 +176,39 @@ def load_payload(json_file: str) -> Any:
         return json.load(f)
 
 
+def scenario_payloads(template: Dict[str, Any], scenario_file: str) -> List[Dict[str, Any]]:
+    """One payload per frame of a recorded scenario (tools/measure/scenario_streams.py output): the template with
+    the frame's image and recorded metadata, the streams interleaved frame by frame, each with its own vehicle id
+    (the tracker keeps a state per vehicle)"""
+    with open(os.path.expanduser(scenario_file)) as f:
+        streams = json.load(f)["streams"]
+    payloads: List[Dict[str, Any]] = []
+    for i in range(max(len(s["frames"]) for s in streams)):
+        for s in streams:
+            if i >= len(s["frames"]):
+                continue
+            frame = s["frames"][i]
+            payload = copy.deepcopy(template)
+            payload["vehicle_id"] = f"bench-{s['vehicle_id']}"
+            with open(frame["image"], "rb") as img:
+                payload["data"]["image1"] = base64.b64encode(img.read()).decode()
+            payload.setdefault("metadata", {}).update(frame["metadata"])
+            payloads.append(payload)
+    return payloads
+
+
 # ------------------------ Benchmark --------------------------------
 def benchmark(
-    url: str, pod_name: str, payload: Any, num_requests: int, delay: float = 0.1
+    url: str, pod_name: str, payloads: List[Any], num_requests: int, delay: float = 0.1
 ) -> Tuple[Dict[str, Any], Any]:
+    """Sends num_requests requests one after the other, cycling through the payloads"""
     wall_times: List[float] = []
     server_mems: List[float] = []
     first_result: Any = None
 
     for i in range(num_requests):
         try:
-            resp: requests.Response = requests.post(url, json=payload)
+            resp: requests.Response = requests.post(url, json=payloads[i % len(payloads)])
             resp.raise_for_status()
         except requests.exceptions.RequestException as e:
             print(f"Request failed at iteration {i+1}: {e}")
@@ -249,13 +274,15 @@ def save_results(handler: str, results: Dict[str, Any]) -> None:
 
 # ------------------------ Main -------------------------------------
 def main() -> None:
-    if len(sys.argv) < 2:
-        print("Usage: python benchmarker.py [num_requests]")
-        sys.exit(1)
-
-    num_requests: int = N
-    if len(sys.argv) >= 2:
-        num_requests = int(sys.argv[1])
+    parser = argparse.ArgumentParser(description="Profile the handlers one after the other, each in its own pod")
+    parser.add_argument("num_requests", type=int, nargs="?", default=N)
+    parser.add_argument("--scenario", help="recorded scenario (scenario_streams.py output): the first handler gets "
+                        "its frames in turn instead of the single input of ./inputs/<handler>.json")
+    parser.add_argument("--handlers", nargs="+", choices=HANDLERS, default=HANDLERS,
+                        help="profile only these handlers (the chain order is kept)")
+    args = parser.parse_args()
+    num_requests: int = args.num_requests
+    handlers: List[str] = [h for h in HANDLERS if h in args.handlers]
 
     try:
         config.load_kube_config()
@@ -263,13 +290,13 @@ def main() -> None:
         config.load_incluster_config()
 
     # Build all images first
-    for handler in HANDLERS:
+    for handler in handlers:
         docker_image = DOCKER_IMAGE_TEMPLATE.format(handler=handler)
         build_docker_image(docker_image, handler)
 
     # Then deploy and test each handler
     prev_payload = None
-    for idx, handler in enumerate(HANDLERS):
+    for idx, handler in enumerate(handlers):
         function_name = f"{handler}-func"
         docker_image = DOCKER_IMAGE_TEMPLATE.format(handler=handler)
         with open(DEPLOY_YAML_TEMPLATE, "r") as f:
@@ -279,10 +306,11 @@ def main() -> None:
             f.write(deploy_yaml_content)
 
         if idx == 0:
-            json_file = f"./inputs/{handler}.json"
-            payload = load_payload(json_file)
+            payload = load_payload(f"./inputs/{handler}.json")
+            payloads = scenario_payloads(payload, args.scenario) if args.scenario else [payload]
+            print(f"{handler}: {len(payloads)} different inputs")
         else:
-            payload = prev_payload
+            payloads = [prev_payload]
 
         print(f"\n=== Testing handler: {handler} ===")
 
@@ -295,7 +323,7 @@ def main() -> None:
             try:
                 pod_name = get_pod_name(function_name, NAMESPACE)
                 print(f"Target pod for memory metrics: {pod_name}")
-                results, first_result = benchmark(url, pod_name, payload, num_requests)
+                results, first_result = benchmark(url, pod_name, payloads, num_requests)
                 save_results(handler, results)
                 prev_payload = first_result
             finally:
