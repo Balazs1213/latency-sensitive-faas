@@ -28,6 +28,12 @@ APP=4dr6u38ufksqzmew9f3twvriw
 HOST=app-$APP.application.127.0.0.1.sslip.io
 NS=application
 SETTLE=${SETTLE:-60}   # extra quiet time before a run, after the app is on the small layout
+# Camera frames: a recorded scenario (scenario_streams.py output: RSU + car streams with their recorded GPS, so the
+# fusion component fuses the RSU's observations with the cars') when the file exists, else the frames folder (every
+# camera an ego vehicle, no fusion)
+SCENARIO=${SCENARIO:-$HOME/thesis/scenarios/campaign.json}
+FRAME_SOURCE=""
+[ -f "$SCENARIO" ] && FRAME_SOURCE="--scenario $SCENARIO"
 
 # --- what is measured ---------------------------------------------------------------------------
 
@@ -280,6 +286,7 @@ switch_config() {  # applies a configuration (folder name); configs/<config>/ ke
 measure() {  # $1 run dir, $2 run id, $3 profile, $4 phases, $5 loadgen options, $6 fault delay, $7 fault command
   local D=$1 START END PW FP
   echo "$3" > "$D/profile.txt"
+  echo "${FRAME_SOURCE:-frames tools/tracker-proto/frames}" > "$D/frames.txt"
   kubectl get pods -n $NS -o wide | grep d- | grep -v Terminating > "$D/pods-before.txt"
   python tools/measure/podwatch.py --out "$D" & PW=$!
   if [ -n "$6" ]; then
@@ -287,7 +294,7 @@ measure() {  # $1 run dir, $2 run id, $3 profile, $4 phases, $5 loadgen options,
   fi
   START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # shellcheck disable=SC2086  # the loadgen options are words
-  python tools/measure/loadgen.py --host "$HOST" --profile "$3" --cameras 8 --run-id "$2" --out "$D" $5
+  python tools/measure/loadgen.py --host "$HOST" --profile "$3" --cameras 8 --run-id "$2" --out "$D" $FRAME_SOURCE $5
   [ -n "$FP" ] && wait "$FP"   # the fault (e.g. a node back after 90 s) is over before the run ends
   sleep 30
   END=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -335,6 +342,12 @@ write_readme() {
   local e
   {
     echo "Measurements of $(basename "$ROOT"). Latency limit $LIMIT ms, 8 cameras, $REPS repetitions (repN)."
+    if [ -n "$FRAME_SOURCE" ]; then
+      echo "Camera frames: recorded scenario $SCENARIO; the 8 cameras are 4 RSU + car pairs with the recorded GPS,"
+      echo "so the fusion component fuses the RSU observations with the cars' (frames.txt in each run folder)."
+    else
+      echo "Camera frames: tools/tracker-proto/frames; every camera is an ego vehicle, the fusion step does not run."
+    fi
     echo "Each run folder: phases.txt (per-phase table), plots/ (overview and per-phase plots), config.txt."
     echo
     echo "1-normal-operation/<profile>/<configuration>/"
@@ -383,7 +396,7 @@ if [ -n "$DRY" ]; then
 fi
 
 write_readme
-log "campaign start: $REPS repetitions${ONLY:+, only $ONLY}"
+log "campaign start: $REPS repetitions${ONLY:+, only $ONLY}, ${FRAME_SOURCE:-frames folder}"
 wanted() { [ -z "$ONLY" ] || [[ "$1" == "$ONLY"* ]]; }
 
 # 1. Normal operation: within a repetition every configuration once (both profiles after one switch); the
