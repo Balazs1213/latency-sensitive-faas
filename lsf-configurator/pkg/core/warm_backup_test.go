@@ -29,3 +29,17 @@ func TestWarmBackupTargetsWithoutFreeNode(t *testing.T) {
 		t.Errorf("got %v, want no target", targets)
 	}
 }
+
+// The warm backups cover every layout candidate, so they are ready whichever layout is active, but not a backup
+func TestAllWarmTargets(t *testing.T) {
+	merged := CompositionInfo{RequiredReplicas: 2}
+	app := &FunctionApp{LayoutCandidates: map[string]Layout{
+		"min_rate":        {"n1": merged},
+		"max_rate":        {"n1": CompositionInfo{RequiredReplicas: 9}, "n2": CompositionInfo{RequiredReplicas: 1}},
+		"max_rate@backup": {"n1": CompositionInfo{RequiredReplicas: 9}, "n3": CompositionInfo{RequiredReplicas: 1}},
+	}}
+	available := map[string]bool{"n1": true, "n2": true, "n3": true}
+	if targets := allWarmTargets(app, available); len(targets) != 3 {
+		t.Errorf("got %d targets, want 3 (2 of max_rate, 1 of min_rate): %v", len(targets), targets)
+	}
+}

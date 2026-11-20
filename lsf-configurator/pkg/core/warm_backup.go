@@ -10,8 +10,8 @@ const (
 	BackupOff = "off"
 	// BackupCold deploys the backup layout when a node becomes unavailable: its moved compositions start cold
 	BackupCold = "cold"
-	// BackupWarm also runs one warm pod of every composition of the active layout on the node its backup would
-	// move it to, so that the backup layout serves at once and only scales up to the required pods
+	// BackupWarm also runs one warm pod of every composition of every layout candidate on the node its backup
+	// would move it to, so that the backup layout serves at once and only scales up to the required pods
 	BackupWarm = "warm"
 )
 
@@ -88,9 +88,10 @@ func (c *latencyController) warmKeepKeys(appID string) map[string]bool {
 	return keys
 }
 
-// ensureWarmBackups keeps one warm pod of every composition of the active layout on the node its backup layout
-// would move it to (warm mode only): it creates the missing ones, sets a deployment that was active (after a
-// return from the backup) back to one pod, and removes the warm backups of an earlier active layout
+// ensureWarmBackups keeps one warm pod of every composition of every layout candidate on the node its backup
+// layout would move it to (warm mode only), so that the backups are warm whichever layout is active when a node
+// fails: it creates the missing ones, sets a deployment that served (after a return from the backup) back to one
+// pod, and removes the warm backups of candidates that are gone
 func (c *latencyController) ensureWarmBackups(app *FunctionApp, available map[string]bool) {
 	if c.backupLayout != BackupWarm {
 		return
@@ -101,7 +102,7 @@ func (c *latencyController) ensureWarmBackups(app *FunctionApp, available map[st
 
 	c.warmMu.Lock()
 	st := c.warmState(app.Id)
-	for _, t := range warmBackupTargets(app.LayoutCandidates[app.ActiveLayoutKey], available) {
+	for _, t := range allWarmTargets(app, available) {
 		fc, ok := fcByKey[compositionKey(t.ci)]
 		if !ok {
 			continue
@@ -131,6 +132,17 @@ func (c *latencyController) ensureWarmBackups(app *FunctionApp, available map[st
 	if len(stale) > 0 {
 		go c.removeStaleWarmBackups(app, stale, existing)
 	}
+}
+
+// allWarmTargets returns the warm backup targets of every layout candidate (a backup layout has none of its own)
+func allWarmTargets(app *FunctionApp, available map[string]bool) []warmTarget {
+	var targets []warmTarget
+	for _, key := range sortedLayoutKeys(app) {
+		if _, isBackup := backedUpLayout(key); !isBackup {
+			targets = append(targets, warmBackupTargets(app.LayoutCandidates[key], available)...)
+		}
+	}
+	return targets
 }
 
 // createWarmBackup creates a warm backup deployment with one pod; its routing table is set when its backup
@@ -165,7 +177,7 @@ func (c *latencyController) setWarmMinScale(appID string, dep *Deployment) {
 	}
 }
 
-// removeStaleWarmBackups deletes the warm backups of an earlier active layout, unless a layout still uses them
+// removeStaleWarmBackups deletes the warm backups of candidates that are gone, unless a layout still uses them
 func (c *latencyController) removeStaleWarmBackups(app *FunctionApp, stale []string, existing map[string]*Deployment) {
 	inUse := c.layoutKeepKeys(app, compositionsByKey(app), true)
 	for _, key := range stale {

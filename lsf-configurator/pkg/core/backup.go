@@ -71,7 +71,8 @@ func sortedNodes(layout Layout) []string {
 }
 
 // followNodeAvailability moves the apps off unavailable nodes to a backup layout and back once the nodes are
-// available again, once per metric window; only with a backup layout mode
+// available again (not during a cooldown), and keeps the warm backups of the active layout, once per metric window;
+// only with a backup layout mode
 func (c *latencyController) followNodeAvailability(apps []*FunctionApp) {
 	now := time.Now()
 	if c.backupLayout == BackupOff || now.Sub(c.lastNodeCheck) < c.metricWindow {
@@ -85,15 +86,23 @@ func (c *latencyController) followNodeAvailability(apps []*FunctionApp) {
 	}
 	for _, a := range apps {
 		app := c.controlledApp(a.Id)
-		if app == nil || c.inCooldown(app.Id) {
+		if app == nil {
 			continue
 		}
-		if original, isBackup := backedUpLayout(app.ActiveLayoutKey); isBackup {
-			c.returnFromBackup(app, original, available)
-		} else if usesUnavailableNode(app.LayoutCandidates[app.ActiveLayoutKey], available) {
-			c.switchToBackup(app, available)
-		} else {
+		original, isBackup := backedUpLayout(app.ActiveLayoutKey)
+		lost := !isBackup && usesUnavailableNode(app.LayoutCandidates[app.ActiveLayoutKey], available)
+		if !isBackup && !lost {
+			// Not a switch, so also in the cooldown: keeps the warm backups ready
 			c.ensureWarmBackups(app, available)
+			continue
+		}
+		if c.inCooldown(app.Id) {
+			continue
+		}
+		if isBackup {
+			c.returnFromBackup(app, original, available)
+		} else {
+			c.switchToBackup(app, available)
 		}
 	}
 }
