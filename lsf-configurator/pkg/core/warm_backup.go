@@ -177,6 +177,27 @@ func (c *latencyController) setWarmMinScale(appID string, dep *Deployment) {
 	}
 }
 
+// removeWarmLeftovers deletes at start-up, when the backup layout is not warm, the deployments that no layout
+// candidate uses: the warm backups of an earlier warm mode (with prewarm off, removeInactiveDeployments does it)
+func (c *latencyController) removeWarmLeftovers(appID string) {
+	if c.backupLayout == BackupWarm {
+		return
+	}
+	// Reload the app: compositions and their deployments are only loaded by GetFunctionApp
+	app, err := c.composer.GetFunctionApp(appID)
+	if err != nil || app == nil {
+		return
+	}
+	keep := c.layoutKeepKeys(app, compositionsByKey(app), true)
+	for _, fc := range app.Compositions {
+		for _, d := range fc.Deployments {
+			if !keep[fc.Id+"@"+d.Node] {
+				c.deleteDeployment(app.Id, fc, d)
+			}
+		}
+	}
+}
+
 // removeStaleWarmBackups deletes the warm backups of candidates that are gone, unless a layout still uses them
 func (c *latencyController) removeStaleWarmBackups(app *FunctionApp, stale []string, existing map[string]*Deployment) {
 	inUse := c.layoutKeepKeys(app, compositionsByKey(app), true)

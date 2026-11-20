@@ -438,6 +438,7 @@ func (c *latencyController) initLayouts() {
 			go c.removeInactiveDeployments(app.Id)
 		} else if app.LatencyLimit > 0 && len(app.LayoutCandidates) > 1 {
 			go c.ensureStandbyLayouts(app)
+			go c.removeWarmLeftovers(app.Id)
 		}
 	}
 }
