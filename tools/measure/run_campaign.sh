@@ -28,6 +28,7 @@ APP=4dr6u38ufksqzmew9f3twvriw
 HOST=app-$APP.application.127.0.0.1.sslip.io
 NS=application
 SETTLE=${SETTLE:-60}   # extra quiet time before a run, after the app is on the small layout
+ENV_WAIT=${ENV_WAIT:-600}   # wait between the environment checks of one run before skipping it
 # Camera frames: a recorded scenario (scenario_streams.py output: RSU + car streams with their recorded GPS, so the
 # fusion component fuses the RSU's observations with the cars') when the file exists, else the frames folder (every
 # camera an ego vehicle, no fusion)
@@ -133,11 +134,15 @@ ensure_es() {  # restarts the Elasticsearch port-forward if it died
 }
 
 disk_ok() {  # the second vmstat line: blocks read in and I/O wait
+  # Only the I/O wait blocks a run: reads alone (seen for minutes after some runs) leave the
+  # CPU free and do not delay the requests, so they are only logged
   local bi wa
   read -r bi wa < <(vmstat 5 2 | tail -1 | awk '{print $9, $16}')
-  if [ "${bi:-0}" -gt 5000 ] || [ "${wa:-0}" -gt 6 ]; then
+  if [ "${wa:-0}" -gt 6 ]; then
     log "disk is busy: bi=$bi wa=$wa"; return 1
   fi
+  [ "${bi:-0}" -gt 5000 ] && log "disk reads: bi=$bi wa=$wa (I/O wait low, not blocking)"
+  return 0
 }
 
 uncordon_nodes() {  # a node left unschedulable by an interrupted node-loss experiment
@@ -320,7 +325,13 @@ FAILS=0
 run_one() {  # $1 run dir relative to ROOT, then the measure arguments from the profile on
   local rel=$1 D=$ROOT/$1; shift
   [ -f "$D/DONE" ] && { log "skip $rel (done)"; return; }
-  if ! check_env; then
+  # A transient problem should not cost the run: wait and check again before skipping it
+  local tries ok=0
+  for tries in 1 2 3; do
+    check_env && { ok=1; break; }
+    [ $tries -lt 3 ] && { log "environment not clean before $rel, waiting $ENV_WAIT s ($tries/3)"; sleep "$ENV_WAIT"; }
+  done
+  if [ $ok = 0 ]; then
     FAILS=$((FAILS+1)); log "SKIP $rel: environment not clean ($FAILS in a row)"
     if [ $FAILS -ge 3 ]; then
       log "aborting after 3 failed checks; leaving the cluster in $FAULT_CONFIG"
